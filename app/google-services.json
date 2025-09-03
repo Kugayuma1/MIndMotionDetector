@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "947697461130",
+    "project_id": "mindmotion-55c99",
+    "storage_bucket": "mindmotion-55c99.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:947697461130:android:caddf77c37106b1d210a73",
+        "android_client_info": {
+          "package_name": "com.example.mindmotion"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDfQ5NpQIut8g3cdNPMdmyiysyr7y5rGyQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

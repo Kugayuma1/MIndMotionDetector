@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/camera_background">
+
+    <!-- Camera Preview -->
+    <androidx.camera.view.PreviewView
+        android:id="@+id/preview_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Overlay for pose detection visualization -->
+    <ImageView
+        android:id="@+id/pose_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="matrix" />
+
+    <!-- Top Status Bar -->
+    <LinearLayout
+        android:id="@+id/status_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_alignParentTop="true"
+        android:orientation="vertical"
+        android:background="@color/status_background"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/status_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Searching for motion sessions..."
+            android:textSize="16sp"
+            android:textColor="@color/status_text"
+            android:gravity="center"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/motion_type_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="14sp"
+            android:textColor="@color/status_text_secondary"
+            android:gravity="center"
+            android:layout_marginTop="4dp"
+            android:visibility="gone" />
+
+    </LinearLayout>
+
+    <!-- Clapping Progress Indicator -->
+    <LinearLayout
+        android:id="@+id/progress_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_centerInParent="true"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="24dp"
+        android:background="@color/progress_background"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/instruction_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Start Clapping!"
+            android:textSize="32sp"
+            android:textStyle="bold"
+            android:textColor="@color/instruction_text"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:id="@+id/clap_counter"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="0 / 3 claps"
+            android:textSize="24sp"
+            android:textColor="@color/counter_text" />
+
+    </LinearLayout>
+
+    <!-- Success/Error Messages -->
+    <TextView
+        android:id="@+id/result_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_centerInParent="true"
+        android:text=""
+        android:textSize="28sp"
+        android:textStyle="bold"
+        android:textColor="@color/result_text"
+        android:gravity="center"
+        android:padding="24dp"
+        android:background="@color/result_background"
+        android:visibility="gone" />
+
+</RelativeLayout>
