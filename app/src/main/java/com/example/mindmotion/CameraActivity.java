@@ -33,7 +33,8 @@ import java.util.concurrent.Executors;
 
 public class CameraActivity extends AppCompatActivity
         implements FirebaseRestManager.SessionPollerListener,
-        ClappingDetector.ClappingListener {
+        ClappingDetector.ClappingListener,
+        ClappingDetector.DebugListener {
 
     private static final String TAG = "CameraActivity";
     private static final int REQUEST_CODE_PERMISSIONS = 10;
@@ -43,12 +44,17 @@ public class CameraActivity extends AppCompatActivity
     private PreviewView previewView;
     private TextView statusText;
     private TextView motionTypeText;
-    private TextView instructionText;
     private TextView clapCounter;
     private TextView resultText;
     private LinearLayout statusBar;
-    private LinearLayout progressContainer;
     private ImageView poseOverlay;
+
+    // Debug UI Components
+    private TextView debugPoseStatus;
+    private TextView debugWristDistance;
+    private TextView debugFingerDistance;
+    private TextView debugClapStatus;
+    private LinearLayout debugPanel;
 
     // Camera and ML
     private ProcessCameraProvider cameraProvider;
@@ -81,29 +87,35 @@ public class CameraActivity extends AppCompatActivity
         previewView = findViewById(R.id.preview_view);
         statusText = findViewById(R.id.status_text);
         motionTypeText = findViewById(R.id.motion_type_text);
-        instructionText = findViewById(R.id.instruction_text);
         clapCounter = findViewById(R.id.clap_counter);
         resultText = findViewById(R.id.result_text);
         statusBar = findViewById(R.id.status_bar);
-        progressContainer = findViewById(R.id.progress_container);
         poseOverlay = findViewById(R.id.pose_overlay);
+
+        // Debug components
+        debugPoseStatus = findViewById(R.id.debug_pose_status);
+        debugWristDistance = findViewById(R.id.debug_wrist_distance);
+        debugFingerDistance = findViewById(R.id.debug_finger_distance);
+        debugClapStatus = findViewById(R.id.debug_clap_status);
+        debugPanel = findViewById(R.id.debug_panel);
     }
 
     private void initializeComponents() {
         cameraExecutor = Executors.newSingleThreadExecutor();
 
-        // Initialize Firebase REST Manager
-        firebaseManager = new FirebaseRestManager();
+        // Initialize Firebase REST Manager with context
+        firebaseManager = new FirebaseRestManager(this); // Pass context here
         firebaseManager.setListener(this);
 
         // Initialize Clapping Detector
         clappingDetector = new ClappingDetector();
         clappingDetector.setListener(this);
+        clappingDetector.setDebugListener(this);
 
-        // Start polling for sessions
+        // Start polling for sessions (now filtered by user)
         firebaseManager.startPollingForSessions();
 
-        updateUI("Searching for motion sessions...", "", false, false);
+        updateUI("Searching for your motion sessions...", "", false, false);
     }
 
     private void initializeMediaPipe() {
@@ -202,6 +214,9 @@ public class CameraActivity extends AppCompatActivity
 
     private void onPoseDetectionError(RuntimeException error) {
         Log.e(TAG, "Pose detection error", error);
+        runOnUiThread(() -> {
+            debugPoseStatus.setText("Pose: Error - " + error.getMessage());
+        });
     }
 
     // Firebase REST Manager Listener Methods
@@ -290,8 +305,19 @@ public class CameraActivity extends AppCompatActivity
         });
     }
 
+    // Debug Listener Methods
+    @Override
+    public void onDebugUpdate(String poseStatus, String wristDistance, String fingerDistance, String clapStatus) {
+        runOnUiThread(() -> {
+            debugPoseStatus.setText("Pose: " + poseStatus);
+            debugWristDistance.setText("Wrist distance: " + wristDistance);
+            debugFingerDistance.setText("Finger distance: " + fingerDistance);
+            debugClapStatus.setText("Clap detection: " + clapStatus);
+        });
+    }
+
     private void startClappingDetection() {
-        updateUI("Get ready to clap!", currentMotionType, true, false);
+        updateUI("Clapping detection active", currentMotionType, true, false);
         clappingDetector.startDetection();
     }
 
@@ -301,7 +327,7 @@ public class CameraActivity extends AppCompatActivity
         clappingDetector.stopDetection();
     }
 
-    private void updateUI(String status, String motionType, boolean showProgress, boolean showResult) {
+    private void updateUI(String status, String motionType, boolean showClapping, boolean showResult) {
         statusText.setText(status);
 
         if (motionType.isEmpty()) {
@@ -311,7 +337,8 @@ public class CameraActivity extends AppCompatActivity
             motionTypeText.setVisibility(TextView.VISIBLE);
         }
 
-        progressContainer.setVisibility(showProgress ? LinearLayout.VISIBLE : LinearLayout.GONE);
+        // Show/hide clap counter based on detection state
+        clapCounter.setVisibility(showClapping ? TextView.VISIBLE : TextView.GONE);
 
         if (showResult) {
             resultText.setText(status);
@@ -323,13 +350,7 @@ public class CameraActivity extends AppCompatActivity
     }
 
     private void updateClapCounter(int current, int required) {
-        clapCounter.setText(current + " / " + required + " claps");
-
-        if (current == 0) {
-            instructionText.setText("Start Clapping!");
-        } else if (current < required) {
-            instructionText.setText("Keep going!");
-        }
+        clapCounter.setText(current + " / " + required + " claps detected");
     }
 
     private boolean allPermissionsGranted() {
@@ -371,4 +392,21 @@ public class CameraActivity extends AppCompatActivity
             firebaseManager.cleanup();
         }
     }
+    // Add this new listener method for voice data
+    @Override
+    public void onVoiceDataSaved(String date, String data) {
+        Log.d(TAG, "Voice data saved for date: " + date + ", data: " + data);
+        // You can show a toast or update UI to confirm voice data was saved
+        runOnUiThread(() -> {
+            Toast.makeText(this, "Voice data saved: " + data, Toast.LENGTH_SHORT).show();
+        });
+    }
+
+    // Example method to save voice data (call this when you detect speech)
+    private void saveDetectedSpeech(String spokenText) {
+        if (firebaseManager != null) {
+            firebaseManager.saveVoiceData(spokenText);
+        }
+    }
 }
+

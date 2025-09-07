@@ -11,10 +11,10 @@ public class ClappingDetector {
     private static final String TAG = "ClappingDetector";
 
     // Detection parameters
-    private static final double CLAP_DISTANCE_THRESHOLD = 0.15; // Distance between hands for clap
+    private static final double CLAP_DISTANCE_THRESHOLD = 0.125; // Distance between hands for clap
     private static final int REQUIRED_CLAP_COUNT = 3; // Number of claps required
-    private static final long CLAP_COOLDOWN_MS = 300; // Minimum time between claps
-    private static final long DETECTION_TIMEOUT_MS = 60000; // 60 seconds to complete claps
+    private static final long CLAP_COOLDOWN_MS = 500; // Minimum time between claps
+    private static final long DETECTION_TIMEOUT_MS = 30000; // 30 seconds to complete claps
 
     // Pose landmark indices (MediaPipe Pose)
     private static final int LEFT_WRIST = 15;
@@ -28,12 +28,23 @@ public class ClappingDetector {
     private long detectionStartTime;
     private boolean isDetectionActive;
     private ClappingListener listener;
+    private DebugListener debugListener;
+
+    // Debug tracking
+    private boolean lastHandsVisible = false;
+    private double lastWristDistance = 0.0;
+    private double lastFingerDistance = 0.0;
+    private boolean lastClapState = false;
 
     public interface ClappingListener {
         void onClappingDetected(int clapCount);
         void onClappingCompleted();
         void onClappingProgress(int currentClaps, int requiredClaps);
         void onDetectionTimeout();
+    }
+
+    public interface DebugListener {
+        void onDebugUpdate(String poseStatus, String wristDistance, String fingerDistance, String clapStatus);
     }
 
     public ClappingDetector() {
@@ -45,6 +56,10 @@ public class ClappingDetector {
         this.listener = listener;
     }
 
+    public void setDebugListener(DebugListener debugListener) {
+        this.debugListener = debugListener;
+    }
+
     public void startDetection() {
         Log.d(TAG, "Starting clapping detection...");
         reset();
@@ -54,11 +69,14 @@ public class ClappingDetector {
         if (listener != null) {
             listener.onClappingProgress(0, REQUIRED_CLAP_COUNT);
         }
+
+        updateDebugInfo();
     }
 
     public void stopDetection() {
         Log.d(TAG, "Stopping clapping detection");
         isDetectionActive = false;
+        updateDebugInfo();
     }
 
     public void reset() {
@@ -66,10 +84,15 @@ public class ClappingDetector {
         lastClapTime = 0;
         detectionStartTime = 0;
         isDetectionActive = false;
+        lastHandsVisible = false;
+        lastWristDistance = 0.0;
+        lastFingerDistance = 0.0;
+        lastClapState = false;
     }
 
     public void analyzePoseResult(PoseLandmarkerResult result) {
         if (!isDetectionActive || result == null || result.landmarks().isEmpty()) {
+            updateDebugInfo("No pose detected", "N/A", "N/A", "Inactive");
             return;
         }
 
@@ -87,6 +110,7 @@ public class ClappingDetector {
         List<NormalizedLandmark> landmarks = result.landmarks().get(0);
 
         if (landmarks.size() <= Math.max(LEFT_INDEX, RIGHT_INDEX)) {
+            updateDebugInfo("Insufficient landmarks", "N/A", "N/A", "Active - Waiting for pose");
             return;
         }
 
@@ -96,17 +120,29 @@ public class ClappingDetector {
         NormalizedLandmark leftIndex = landmarks.get(LEFT_INDEX);
         NormalizedLandmark rightIndex = landmarks.get(RIGHT_INDEX);
 
-        // Check if hands are visible (using visibility threshold)
-        if (!isLandmarkVisible(leftWrist) || !isLandmarkVisible(rightWrist) ||
-                !isLandmarkVisible(leftIndex) || !isLandmarkVisible(rightIndex)) {
+        // Check if hands are visible
+        boolean handsVisible = isLandmarkVisible(leftWrist) && isLandmarkVisible(rightWrist) &&
+                isLandmarkVisible(leftIndex) && isLandmarkVisible(rightIndex);
+
+        lastHandsVisible = handsVisible;
+
+        if (!handsVisible) {
+            updateDebugInfo("Hands not visible", "N/A", "N/A", "Active - Show both hands");
             return;
         }
 
-        // Calculate distance between hands (using index fingers for better accuracy)
-        double distance = calculateDistance(leftIndex, rightIndex);
+        // Calculate distances between both wrists AND index fingers
+        double wristDistance = calculateDistance(leftWrist, rightWrist);
+        double fingerDistance = calculateDistance(leftIndex, rightIndex);
 
-        // Check if this is a clap
-        if (isClap(distance)) {
+        lastWristDistance = wristDistance;
+        lastFingerDistance = fingerDistance;
+
+        // Check if this is a clap - BOTH wrists AND fingers must be close
+        boolean isCurrentlyClapping = isClap(wristDistance, fingerDistance);
+        lastClapState = isCurrentlyClapping;
+
+        if (isCurrentlyClapping) {
             long currentTime = System.currentTimeMillis();
 
             // Check cooldown to avoid multiple detections of same clap
@@ -114,6 +150,16 @@ public class ClappingDetector {
                 registerClap(currentTime);
             }
         }
+
+        // Update debug information
+        String poseStatus = handsVisible ? "Both hands visible" : "Hands not visible";
+        String wristDistanceStr = String.format("%.3f (thresh: %.3f)", wristDistance, CLAP_DISTANCE_THRESHOLD);
+        String fingerDistanceStr = String.format("%.3f (thresh: %.3f)", fingerDistance, CLAP_DISTANCE_THRESHOLD);
+        String clapStatus = String.format("Active - %s (%d/%d claps)",
+                isCurrentlyClapping ? "CLAPPING" : "Waiting for clap",
+                clapTimes.size(), REQUIRED_CLAP_COUNT);
+
+        updateDebugInfo(poseStatus, wristDistanceStr, fingerDistanceStr, clapStatus);
     }
 
     private boolean isLandmarkVisible(NormalizedLandmark landmark) {
@@ -127,8 +173,9 @@ public class ClappingDetector {
         return Math.sqrt(dx * dx + dy * dy);
     }
 
-    private boolean isClap(double handDistance) {
-        return handDistance < CLAP_DISTANCE_THRESHOLD;
+    private boolean isClap(double wristDistance, double fingerDistance) {
+        // Both wrists AND fingers must be close together for a proper clap
+        return wristDistance < CLAP_DISTANCE_THRESHOLD && fingerDistance < CLAP_DISTANCE_THRESHOLD;
     }
 
     private void registerClap(long currentTime) {
@@ -149,6 +196,21 @@ public class ClappingDetector {
                 listener.onClappingCompleted();
             }
             stopDetection();
+        }
+    }
+
+    private void updateDebugInfo() {
+        updateDebugInfo(
+                lastHandsVisible ? "Both hands visible" : "Hands not visible",
+                String.format("%.3f", lastWristDistance),
+                String.format("%.3f", lastFingerDistance),
+                isDetectionActive ? "Active" : "Inactive"
+        );
+    }
+
+    private void updateDebugInfo(String poseStatus, String wristDistance, String fingerDistance, String clapStatus) {
+        if (debugListener != null) {
+            debugListener.onDebugUpdate(poseStatus, wristDistance, fingerDistance, clapStatus);
         }
     }
 

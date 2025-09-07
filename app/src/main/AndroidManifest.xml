@@ -34,12 +34,21 @@
             </intent-filter>
         </activity>
 
-        <!-- Camera Detection Activity -->
+        <!-- Login Activity -->
+        <activity
+            android:name=".LoginActivity"
+            android:exported="false" />
+
+        <!-- Main Menu Activity -->
+        <activity
+            android:name=".MainMenuActivity"
+            android:exported="false" />
+
+        <!-- Camera Activity -->
         <activity
             android:name=".CameraActivity"
             android:exported="false"
-            android:screenOrientation="portrait"
-            android:theme="@style/Theme.MindMotionDetector" />
+            android:screenOrientation="portrait" />
 
     </application>
 
