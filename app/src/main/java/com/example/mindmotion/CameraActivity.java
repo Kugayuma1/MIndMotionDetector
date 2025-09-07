@@ -34,7 +34,9 @@ import java.util.concurrent.Executors;
 public class CameraActivity extends AppCompatActivity
         implements FirebaseRestManager.SessionPollerListener,
         ClappingDetector.ClappingListener,
-        ClappingDetector.DebugListener {
+        ClappingDetector.DebugListener,
+        WavingDetector.WavingListener,
+        WavingDetector.DebugListener {
 
     private static final String TAG = "CameraActivity";
     private static final int REQUEST_CODE_PERMISSIONS = 10;
@@ -64,6 +66,7 @@ public class CameraActivity extends AppCompatActivity
     // Motion Detection
     private FirebaseRestManager firebaseManager;
     private ClappingDetector clappingDetector;
+    private WavingDetector wavingDetector;
     private String currentSessionId;
     private String currentMotionType;
 
@@ -104,15 +107,19 @@ public class CameraActivity extends AppCompatActivity
         cameraExecutor = Executors.newSingleThreadExecutor();
 
         // Initialize Firebase REST Manager with context
-        firebaseManager = new FirebaseRestManager(this); // Pass context here
+        firebaseManager = new FirebaseRestManager(this);
         firebaseManager.setListener(this);
 
-        // Initialize Clapping Detector
+        // Initialize both detectors
         clappingDetector = new ClappingDetector();
         clappingDetector.setListener(this);
         clappingDetector.setDebugListener(this);
 
-        // Start polling for sessions (now filtered by user)
+        wavingDetector = new WavingDetector();
+        wavingDetector.setListener(this);
+        wavingDetector.setDebugListener(this);
+
+        // Start polling for sessions
         firebaseManager.startPollingForSessions();
 
         updateUI("Searching for your motion sessions...", "", false, false);
@@ -207,8 +214,11 @@ public class CameraActivity extends AppCompatActivity
     }
 
     private void onPoseDetectionResult(PoseLandmarkerResult result, MPImage image) {
-        if (clappingDetector.isActive()) {
+        // Route to active detector based on current motion type
+        if ("clapping".equals(currentMotionType) && clappingDetector.isActive()) {
             clappingDetector.analyzePoseResult(result);
+        } else if ("wave".equals(currentMotionType) && wavingDetector.isActive()) {
+            wavingDetector.analyzePoseResult(result);
         }
     }
 
@@ -229,6 +239,8 @@ public class CameraActivity extends AppCompatActivity
 
             if ("clapping".equals(motionType)) {
                 startClappingDetection();
+            } else if ("wave".equals(motionType)) {
+                startWavingDetection();
             } else {
                 updateUI("Unknown motion type: " + motionType, motionType, false, false);
             }
@@ -240,7 +252,7 @@ public class CameraActivity extends AppCompatActivity
         runOnUiThread(() -> {
             if (sessionId.equals(currentSessionId)) {
                 updateUI("Session timed out", "", false, false);
-                clappingDetector.stopDetection();
+                stopAllDetectors();
                 resetSession();
             }
         });
@@ -259,36 +271,34 @@ public class CameraActivity extends AppCompatActivity
         Log.d(TAG, "Motion successfully marked for session: " + sessionId);
     }
 
+    @Override
+    public void onVoiceDataSaved(String date, String data) {
+        Log.d(TAG, "Voice data saved for date: " + date + ", data: " + data);
+        runOnUiThread(() -> {
+            Toast.makeText(this, "Voice data saved: " + data, Toast.LENGTH_SHORT).show();
+        });
+    }
+
     // Clapping Detection Listener Methods
     @Override
     public void onClappingDetected(int clapCount) {
         runOnUiThread(() -> {
-            updateClapCounter(clapCount, clappingDetector.getRequiredClapCount());
+            updateClapCounter(clapCount, clappingDetector.getRequiredClapCount(), "claps");
         });
     }
 
     @Override
     public void onClappingCompleted() {
         runOnUiThread(() -> {
-            updateUI("Motion detected successfully!", currentMotionType, false, true);
-
-            // Notify Firebase that motion was detected
-            if (currentSessionId != null) {
-                firebaseManager.markMotionDetected(currentSessionId);
-            }
-
-            // Reset after a delay
-            resultText.postDelayed(() -> {
-                resetSession();
-                updateUI("Searching for motion sessions...", "", false, false);
-            }, 3000);
+            updateUI("Motion detected successfully! 🎉", currentMotionType, false, true);
+            onMotionCompleted();
         });
     }
 
     @Override
     public void onClappingProgress(int currentClaps, int requiredClaps) {
         runOnUiThread(() -> {
-            updateClapCounter(currentClaps, requiredClaps);
+            updateClapCounter(currentClaps, requiredClaps, "claps");
         });
     }
 
@@ -296,18 +306,32 @@ public class CameraActivity extends AppCompatActivity
     public void onDetectionTimeout() {
         runOnUiThread(() -> {
             updateUI("Motion detection timed out", currentMotionType, false, false);
-
-            // Reset after a delay
-            resultText.postDelayed(() -> {
-                resetSession();
-                updateUI("Searching for motion sessions...", "", false, false);
-            }, 2000);
+            onMotionTimedOut();
         });
     }
 
-    // Debug Listener Methods
-    @Override
-    public void onDebugUpdate(String poseStatus, String wristDistance, String fingerDistance, String clapStatus) {
+    // Waving Detection Listener Methods
+    public void onWavingDetected(int waveCount) {
+        runOnUiThread(() -> {
+            updateClapCounter(waveCount, wavingDetector.getRequiredWaveCount(), "waves");
+        });
+    }
+
+    public void onWavingCompleted() {
+        runOnUiThread(() -> {
+            updateUI("Motion detected successfully! 🌊", currentMotionType, false, true);
+            onMotionCompleted();
+        });
+    }
+
+    public void onWavingProgress(int currentWaves, int requiredWaves) {
+        runOnUiThread(() -> {
+            updateClapCounter(currentWaves, requiredWaves, "waves");
+        });
+    }
+
+    // Clapping Debug Listener Methods
+    public void onClapDebugUpdate(String poseStatus, String wristDistance, String fingerDistance, String clapStatus) {
         runOnUiThread(() -> {
             debugPoseStatus.setText("Pose: " + poseStatus);
             debugWristDistance.setText("Wrist distance: " + wristDistance);
@@ -316,18 +340,61 @@ public class CameraActivity extends AppCompatActivity
         });
     }
 
+    // Waving Debug Listener Methods (WavingDetector.DebugListener)
+    public void onWaveDebugUpdate(String poseStatus, String handsHeight, String waveMovement, String waveStatus) {
+        runOnUiThread(() -> {
+            debugPoseStatus.setText("Pose: " + poseStatus);
+            debugWristDistance.setText("Hands height: " + handsHeight);
+            debugFingerDistance.setText("Wave movement: " + waveMovement);
+            debugClapStatus.setText("Wave detection: " + waveStatus);
+        });
+    }
+
     private void startClappingDetection() {
         updateUI("Clapping detection active", currentMotionType, true, false);
+        wavingDetector.stopDetection(); // Ensure only one detector is active
         clappingDetector.startDetection();
+    }
+
+    private void startWavingDetection() {
+        updateUI("Waving detection active", currentMotionType, true, false);
+        clappingDetector.stopDetection(); // Ensure only one detector is active
+        wavingDetector.startDetection();
+    }
+
+    private void stopAllDetectors() {
+        clappingDetector.stopDetection();
+        wavingDetector.stopDetection();
+    }
+
+    private void onMotionCompleted() {
+        // Notify Firebase that motion was detected
+        if (currentSessionId != null) {
+            firebaseManager.markMotionDetected(currentSessionId);
+        }
+
+        // Reset after a delay
+        resultText.postDelayed(() -> {
+            resetSession();
+            updateUI("Searching for motion sessions...", "", false, false);
+        }, 3000);
+    }
+
+    private void onMotionTimedOut() {
+        // Reset after a delay
+        resultText.postDelayed(() -> {
+            resetSession();
+            updateUI("Searching for motion sessions...", "", false, false);
+        }, 2000);
     }
 
     private void resetSession() {
         currentSessionId = null;
         currentMotionType = null;
-        clappingDetector.stopDetection();
+        stopAllDetectors();
     }
 
-    private void updateUI(String status, String motionType, boolean showClapping, boolean showResult) {
+    private void updateUI(String status, String motionType, boolean showCounter, boolean showResult) {
         statusText.setText(status);
 
         if (motionType.isEmpty()) {
@@ -337,8 +404,8 @@ public class CameraActivity extends AppCompatActivity
             motionTypeText.setVisibility(TextView.VISIBLE);
         }
 
-        // Show/hide clap counter based on detection state
-        clapCounter.setVisibility(showClapping ? TextView.VISIBLE : TextView.GONE);
+        // Show/hide motion counter based on detection state
+        clapCounter.setVisibility(showCounter ? TextView.VISIBLE : TextView.GONE);
 
         if (showResult) {
             resultText.setText(status);
@@ -349,8 +416,8 @@ public class CameraActivity extends AppCompatActivity
         }
     }
 
-    private void updateClapCounter(int current, int required) {
-        clapCounter.setText(current + " / " + required + " claps detected");
+    private void updateClapCounter(int current, int required, String motionName) {
+        clapCounter.setText(current + " / " + required + " " + motionName + " detected");
     }
 
     private boolean allPermissionsGranted() {
@@ -392,21 +459,10 @@ public class CameraActivity extends AppCompatActivity
             firebaseManager.cleanup();
         }
     }
-    // Add this new listener method for voice data
-    @Override
-    public void onVoiceDataSaved(String date, String data) {
-        Log.d(TAG, "Voice data saved for date: " + date + ", data: " + data);
-        // You can show a toast or update UI to confirm voice data was saved
-        runOnUiThread(() -> {
-            Toast.makeText(this, "Voice data saved: " + data, Toast.LENGTH_SHORT).show();
-        });
-    }
 
-    // Example method to save voice data (call this when you detect speech)
     private void saveDetectedSpeech(String spokenText) {
         if (firebaseManager != null) {
             firebaseManager.saveVoiceData(spokenText);
         }
     }
 }
-

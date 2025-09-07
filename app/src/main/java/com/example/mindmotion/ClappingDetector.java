@@ -44,7 +44,7 @@ public class ClappingDetector {
     }
 
     public interface DebugListener {
-        void onDebugUpdate(String poseStatus, String wristDistance, String fingerDistance, String clapStatus);
+        void onClapDebugUpdate(String poseStatus, String wristDistance, String fingerDistance, String clapStatus);
     }
 
     public ClappingDetector() {
@@ -210,7 +210,7 @@ public class ClappingDetector {
 
     private void updateDebugInfo(String poseStatus, String wristDistance, String fingerDistance, String clapStatus) {
         if (debugListener != null) {
-            debugListener.onDebugUpdate(poseStatus, wristDistance, fingerDistance, clapStatus);
+            debugListener.onClapDebugUpdate(poseStatus, wristDistance, fingerDistance, clapStatus);
         }
     }
 
