@@ -10,13 +10,12 @@ import java.util.List;
 public class WavingDetector {
     private static final String TAG = "WavingDetector";
 
-    // Detection parameters for waving
-    private static final double WAVE_HEIGHT_THRESHOLD = 0.15; // Minimum vertical movement for wave
-    private static final double WAVE_HORIZONTAL_THRESHOLD = 0.1; // Minimum horizontal movement
-    private static final int REQUIRED_WAVE_COUNT = 2; // Number of waves required (back and forth = 2 waves)
-    private static final long WAVE_COOLDOWN_MS = 300; // Minimum time between wave detections
+    // Detection parameters for waving (made easier for seated users)
+    private static final double WAVE_HORIZONTAL_THRESHOLD = 0.02; // Reduced horizontal movement needed
+    private static final int REQUIRED_WAVE_COUNT = 3; // Number of wave motions required
+    private static final long WAVE_COOLDOWN_MS = 100; // Time between wave detections
     private static final long DETECTION_TIMEOUT_MS = 30000; // 30 seconds to complete waves
-    private static final double HANDS_UP_THRESHOLD = 0.3; // Both hands must be above this relative to shoulders
+    private static final double HANDS_VISIBLE_THRESHOLD = 0.1; // Just need hands to be roughly at shoulder level or slightly above
 
     // Pose landmark indices (MediaPipe Pose)
     private static final int LEFT_WRIST = 15;
@@ -37,15 +36,14 @@ public class WavingDetector {
     // Wave motion tracking
     private double leftWristLastX = 0.0;
     private double rightWristLastX = 0.0;
-    private boolean leftHandMovingRight = true;
-    private boolean rightHandMovingRight = false;
-    private boolean lastHandsUp = false;
+    private int framesSinceLastWave = 0;
+    private boolean expectingInwardMotion = false; // Track wave cycle
 
     // Debug tracking
     private boolean lastHandsVisible = false;
     private double lastLeftWristHeight = 0.0;
     private double lastRightWristHeight = 0.0;
-    private boolean lastWaveState = false;
+    private String lastMovementDescription = "";
 
     public interface WavingListener {
         void onWavingDetected(int waveCount);
@@ -97,13 +95,12 @@ public class WavingDetector {
         isDetectionActive = false;
         leftWristLastX = 0.0;
         rightWristLastX = 0.0;
-        leftHandMovingRight = true;
-        rightHandMovingRight = false;
-        lastHandsUp = false;
+        framesSinceLastWave = 0;
+        expectingInwardMotion = false;
         lastHandsVisible = false;
         lastLeftWristHeight = 0.0;
         lastRightWristHeight = 0.0;
-        lastWaveState = false;
+        lastMovementDescription = "";
     }
 
     public void analyzePoseResult(PoseLandmarkerResult result) {
@@ -143,30 +140,31 @@ public class WavingDetector {
         lastHandsVisible = handsVisible;
 
         if (!handsVisible) {
-            updateDebugInfo("Hands not visible", "N/A", "N/A", "Active - Show both hands up");
+            updateDebugInfo("Hands not visible", "N/A", "N/A", "Active - Show both hands");
             return;
         }
 
-        // Check if both hands are raised (above shoulders)
-        double leftWristHeight = leftShoulder.y() - leftWrist.y(); // Positive = hand above shoulder
+        // Check if hands are at a reasonable height (much more lenient)
+        // Hands just need to be roughly at shoulder level or slightly above/below
+        double leftWristHeight = leftShoulder.y() - leftWrist.y();
         double rightWristHeight = rightShoulder.y() - rightWrist.y();
 
         lastLeftWristHeight = leftWristHeight;
         lastRightWristHeight = rightWristHeight;
 
-        boolean handsUp = leftWristHeight > HANDS_UP_THRESHOLD && rightWristHeight > HANDS_UP_THRESHOLD;
-        lastHandsUp = handsUp;
+        // Very lenient height check - hands can be slightly below shoulders too
+        boolean handsAtReasonableHeight = leftWristHeight > -0.1 && rightWristHeight > -0.1;
 
-        if (!handsUp) {
+        if (!handsAtReasonableHeight) {
             updateDebugInfo("Hands visible",
-                    String.format("L:%.3f R:%.3f (need >%.3f)", leftWristHeight, rightWristHeight, HANDS_UP_THRESHOLD),
-                    "Hands not raised", "Active - Raise both hands");
+                    String.format("L:%.3f R:%.3f (need >-0.1)", leftWristHeight, rightWristHeight),
+                    "Hands too low", "Active - Lift hands slightly");
             return;
         }
 
-        // Detect waving motion (horizontal movement while hands are up)
-        boolean waveDetected = detectWaveMotion(leftWrist, rightWrist);
-        lastWaveState = waveDetected;
+        // Detect waving motion (simplified)
+        framesSinceLastWave++;
+        boolean waveDetected = detectSimpleWaveMotion(leftWrist, rightWrist);
 
         if (waveDetected) {
             long currentTime = System.currentTimeMillis();
@@ -174,27 +172,26 @@ public class WavingDetector {
             // Check cooldown to avoid multiple detections of same wave
             if (currentTime - lastWaveTime > WAVE_COOLDOWN_MS) {
                 registerWave(currentTime);
+                framesSinceLastWave = 0;
             }
         }
 
         // Update debug information
         String poseStatus = handsVisible ? "Both hands visible" : "Hands not visible";
-        String handsHeightStr = String.format("L:%.3f R:%.3f (thresh:%.3f)",
-                leftWristHeight, rightWristHeight, HANDS_UP_THRESHOLD);
-        String movementStr = String.format("L-X:%.3f R-X:%.3f", leftWrist.x(), rightWrist.x());
+        String handsHeightStr = String.format("L:%.3f R:%.3f (need >-0.1)",
+                leftWristHeight, rightWristHeight);
         String waveStatus = String.format("Active - %s (%d/%d waves)",
-                waveDetected ? "WAVING" : "Wave both hands",
+                waveDetected ? "WAVING" : "Wave hands side to side",
                 waveTimes.size(), REQUIRED_WAVE_COUNT);
 
-        updateDebugInfo(poseStatus, handsHeightStr, movementStr, waveStatus);
+        updateDebugInfo(poseStatus, handsHeightStr, lastMovementDescription, waveStatus);
     }
 
     private boolean isLandmarkVisible(NormalizedLandmark landmark) {
-        // MediaPipe Tasks API uses visibility score
         return landmark.visibility().isPresent() ? landmark.visibility().get() > 0.5 : true;
     }
 
-    private boolean detectWaveMotion(NormalizedLandmark leftWrist, NormalizedLandmark rightWrist) {
+    private boolean detectSimpleWaveMotion(NormalizedLandmark leftWrist, NormalizedLandmark rightWrist) {
         double currentLeftX = leftWrist.x();
         double currentRightX = rightWrist.x();
 
@@ -209,23 +206,44 @@ public class WavingDetector {
         double leftMovement = currentLeftX - leftWristLastX;
         double rightMovement = currentRightX - rightWristLastX;
 
-        // Check for significant horizontal movement in opposite directions
+        // Check for significant movement in either hand
         boolean leftMovedSignificantly = Math.abs(leftMovement) > WAVE_HORIZONTAL_THRESHOLD;
         boolean rightMovedSignificantly = Math.abs(rightMovement) > WAVE_HORIZONTAL_THRESHOLD;
 
-        // For waving, we want coordinated movement - both hands moving outward or inward
         boolean isWaveMotion = false;
+        String movementDesc = "";
 
-        if (leftMovedSignificantly && rightMovedSignificantly) {
-            // Both hands moving outward (away from center)
-            if (leftMovement < 0 && rightMovement > 0) {
-                isWaveMotion = true;
+        // Simplified wave detection - look for coordinated outward or inward movement
+        if (leftMovedSignificantly || rightMovedSignificantly) {
+            // Outward motion (hands moving away from center)
+            if (leftMovement < -WAVE_HORIZONTAL_THRESHOLD && rightMovement > WAVE_HORIZONTAL_THRESHOLD) {
+                if (!expectingInwardMotion) {
+                    isWaveMotion = true;
+                    expectingInwardMotion = true;
+                    movementDesc = "Hands moving outward";
+                }
             }
-            // Both hands moving inward (toward center)
-            else if (leftMovement > 0 && rightMovement < 0) {
+            // Inward motion (hands moving toward center)
+            else if (leftMovement > WAVE_HORIZONTAL_THRESHOLD && rightMovement < -WAVE_HORIZONTAL_THRESHOLD) {
+                if (expectingInwardMotion) {
+                    isWaveMotion = true;
+                    expectingInwardMotion = false;
+                    movementDesc = "Hands moving inward";
+                }
+            }
+            // Single hand wave is also acceptable
+            else if (leftMovedSignificantly && Math.abs(rightMovement) < WAVE_HORIZONTAL_THRESHOLD/2) {
                 isWaveMotion = true;
+                movementDesc = "Left hand waving";
+            }
+            else if (rightMovedSignificantly && Math.abs(leftMovement) < WAVE_HORIZONTAL_THRESHOLD/2) {
+                isWaveMotion = true;
+                movementDesc = "Right hand waving";
             }
         }
+
+        lastMovementDescription = movementDesc.isEmpty() ?
+                String.format("L:%.3f R:%.3f", leftMovement, rightMovement) : movementDesc;
 
         // Update last positions
         leftWristLastX = currentLeftX;
@@ -259,7 +277,7 @@ public class WavingDetector {
         updateDebugInfo(
                 lastHandsVisible ? "Both hands visible" : "Hands not visible",
                 String.format("L:%.3f R:%.3f", lastLeftWristHeight, lastRightWristHeight),
-                "N/A",
+                lastMovementDescription,
                 isDetectionActive ? "Active" : "Inactive"
         );
     }

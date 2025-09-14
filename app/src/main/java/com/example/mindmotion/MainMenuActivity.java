@@ -3,6 +3,8 @@ package com.example.mindmotion;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.widget.ImageButton;
 import android.widget.TextView;
@@ -12,12 +14,28 @@ import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
-public class MainMenuActivity extends AppCompatActivity {
+public class MainMenuActivity extends AppCompatActivity implements RestAuthManager.TokenRefreshListener {
     private static final String TAG = "MainMenuActivity";
 
     private TextView welcomeText;
     private ImageButton cameraButton;
     private ImageButton logoutButton;
+
+    private RestAuthManager authManager;
+
+    // Token refresh components
+    private Handler tokenRefreshHandler = new Handler(Looper.getMainLooper());
+    private Runnable tokenRefreshRunnable = new Runnable() {
+        @Override
+        public void run() {
+            Log.d(TAG, "Performing periodic token refresh check");
+            if (authManager != null && authManager.isUserLoggedIn()) {
+                authManager.refreshTokenIfNeeded(MainMenuActivity.this); // Use activity as listener
+            }
+            // Schedule next refresh in 30 minutes
+            tokenRefreshHandler.postDelayed(this, 30 * 60 * 1000); // 30 minutes
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -25,11 +43,85 @@ public class MainMenuActivity extends AppCompatActivity {
         Log.d(TAG, "MainMenuActivity onCreate called");
         setContentView(R.layout.activity_main_menu);
 
+        authManager = new RestAuthManager(this);
+
         initializeViews();
         setupWelcomeMessage();
         setupBackPressHandler();
 
         Log.d(TAG, "MainMenuActivity setup completed");
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Log.d(TAG, "MainMenuActivity onResume - starting periodic token refresh");
+
+        // Start periodic token refresh when activity becomes active
+        startPeriodicTokenRefresh();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        Log.d(TAG, "MainMenuActivity onPause - stopping periodic token refresh");
+
+        // Stop periodic token refresh when activity is not visible
+        stopPeriodicTokenRefresh();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        Log.d(TAG, "MainMenuActivity onDestroy");
+
+        // Clean up
+        stopPeriodicTokenRefresh();
+        if (authManager != null) {
+            authManager.cleanup();
+        }
+    }
+
+    private void startPeriodicTokenRefresh() {
+        Log.d(TAG, "Starting periodic token refresh");
+
+        // Remove any existing callbacks to prevent duplicates
+        tokenRefreshHandler.removeCallbacks(tokenRefreshRunnable);
+
+        // Start the periodic refresh (first check after 5 minutes, then every 30 minutes)
+        tokenRefreshHandler.postDelayed(tokenRefreshRunnable, 5 * 60 * 1000); // 5 minutes initial delay
+    }
+
+    private void stopPeriodicTokenRefresh() {
+        Log.d(TAG, "Stopping periodic token refresh");
+        tokenRefreshHandler.removeCallbacks(tokenRefreshRunnable);
+    }
+
+    // TokenRefreshListener implementation
+    @Override
+    public void onTokenRefreshSuccess() {
+        Log.d(TAG, "Periodic token refresh successful");
+        // No need to show message for background refresh
+    }
+
+    @Override
+    public void onTokenRefreshFailed(String error) {
+        Log.e(TAG, "Periodic token refresh failed: " + error);
+
+        if (error.contains("Session expired") || error.contains("No refresh token")) {
+            // Critical failure - user needs to re-authenticate
+            runOnUiThread(() -> {
+                Toast.makeText(this, "Session expired. Please login again.", Toast.LENGTH_LONG).show();
+
+                // Force logout and redirect to login
+                authManager.logout();
+                Intent intent = new Intent(this, LoginActivity.class);
+                intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                startActivity(intent);
+                finish();
+            });
+        }
+        // For network errors, just log and try again next cycle
     }
 
     private void initializeViews() {
@@ -120,8 +212,10 @@ public class MainMenuActivity extends AppCompatActivity {
     private void performLogout() {
         Log.d(TAG, "Performing logout");
 
+        // Stop token refresh before logout
+        stopPeriodicTokenRefresh();
+
         // Use RestAuthManager for proper logout
-        RestAuthManager authManager = new RestAuthManager(this);
         authManager.logout();
 
         Toast.makeText(this, "Logged out successfully", Toast.LENGTH_SHORT).show();

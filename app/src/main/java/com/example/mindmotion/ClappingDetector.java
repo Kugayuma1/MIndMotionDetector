@@ -13,7 +13,7 @@ public class ClappingDetector {
     // Detection parameters
     private static final double CLAP_DISTANCE_THRESHOLD = 0.125; // Distance between hands for clap
     private static final int REQUIRED_CLAP_COUNT = 3; // Number of claps required
-    private static final long CLAP_COOLDOWN_MS = 500; // Minimum time between claps
+    private static final long CLAP_COOLDOWN_MS = 300; // Minimum time between claps
     private static final long DETECTION_TIMEOUT_MS = 30000; // 30 seconds to complete claps
 
     // Pose landmark indices (MediaPipe Pose)

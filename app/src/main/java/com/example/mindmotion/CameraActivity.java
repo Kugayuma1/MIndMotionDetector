@@ -1,8 +1,11 @@
 package com.example.mindmotion;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.util.Size;
 import android.widget.TextView;
@@ -36,7 +39,8 @@ public class CameraActivity extends AppCompatActivity
         ClappingDetector.ClappingListener,
         ClappingDetector.DebugListener,
         WavingDetector.WavingListener,
-        WavingDetector.DebugListener {
+        WavingDetector.DebugListener,
+        RestAuthManager.TokenRefreshListener {
 
     private static final String TAG = "CameraActivity";
     private static final int REQUEST_CODE_PERMISSIONS = 10;
@@ -70,6 +74,27 @@ public class CameraActivity extends AppCompatActivity
     private String currentSessionId;
     private String currentMotionType;
 
+    private int authRetryCount = 0;
+    private static final int MAX_AUTH_RETRIES = 3;
+    private boolean isHandlingAuthError = false;
+
+    // Auth manager for token validation
+    private RestAuthManager authManager;
+
+    // Token refresh components
+    private Handler tokenRefreshHandler = new Handler(Looper.getMainLooper());
+    private Runnable tokenRefreshRunnable = new Runnable() {
+        @Override
+        public void run() {
+            Log.d(TAG, "Performing periodic token refresh check in camera");
+            if (authManager != null && authManager.isUserLoggedIn()) {
+                authManager.refreshTokenIfNeeded(CameraActivity.this);
+            }
+            // Schedule next refresh in 30 minutes
+            tokenRefreshHandler.postDelayed(this, 30 * 60 * 1000);
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -84,6 +109,171 @@ public class CameraActivity extends AppCompatActivity
         } else {
             ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS);
         }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Log.d(TAG, "CameraActivity onResume - starting token refresh and validation");
+
+        // Reset retry counter when activity resumes
+        authRetryCount = 0;
+        isHandlingAuthError = false;
+
+        // Start periodic token refresh
+        startPeriodicTokenRefresh();
+
+        // Let FirebaseManager know app resumed
+        if (firebaseManager != null) {
+            firebaseManager.onAppResume();
+        }
+
+        // Check authentication when activity resumes
+        validateAuthenticationAndStartPolling();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        Log.d(TAG, "CameraActivity onPause - stopping token refresh and polling");
+
+        // Stop periodic token refresh
+        stopPeriodicTokenRefresh();
+
+        // Stop polling when activity is not visible to conserve resources
+        if (firebaseManager != null) {
+            firebaseManager.stopPolling();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        Log.d(TAG, "CameraActivity onDestroy - cleaning up");
+
+        // Stop token refresh
+        stopPeriodicTokenRefresh();
+
+        // Existing cleanup code
+        if (cameraExecutor != null) {
+            cameraExecutor.shutdown();
+        }
+        if (poseLandmarker != null) {
+            poseLandmarker.close();
+        }
+        if (firebaseManager != null) {
+            firebaseManager.cleanup();
+        }
+        if (authManager != null) {
+            authManager.cleanup();
+        }
+    }
+
+    // Token refresh management methods
+    private void startPeriodicTokenRefresh() {
+        Log.d(TAG, "Starting periodic token refresh in camera activity");
+        tokenRefreshHandler.removeCallbacks(tokenRefreshRunnable);
+        // Start checking after 5 minutes, then every 30 minutes
+        tokenRefreshHandler.postDelayed(tokenRefreshRunnable, 5 * 60 * 1000);
+    }
+
+    private void stopPeriodicTokenRefresh() {
+        Log.d(TAG, "Stopping periodic token refresh in camera activity");
+        tokenRefreshHandler.removeCallbacks(tokenRefreshRunnable);
+    }
+
+    // Token Refresh Listener implementation
+    @Override
+    public void onTokenRefreshSuccess() {
+        Log.d(TAG, "Periodic token refresh successful in camera activity");
+        // Reload tokens to FirebaseManager to ensure it has the latest tokens
+        loadLatestTokensToFirebaseManager();
+    }
+
+    @Override
+    public void onTokenRefreshFailed(String error) {
+        Log.e(TAG, "Periodic token refresh failed in camera: " + error);
+
+        if (error.contains("Session expired") || error.contains("No refresh token")) {
+            runOnUiThread(() -> {
+                Toast.makeText(this, "Session expired. Returning to login.", Toast.LENGTH_LONG).show();
+
+                authManager.logout();
+                redirectToLogin();
+            });
+        }
+        // For network errors, just log and try again next cycle
+    }
+
+    // Enhanced method to make authenticated API calls
+    private void makeAuthenticatedFirebaseCall() {
+        if (authManager == null) {
+            Log.e(TAG, "AuthManager not available for authenticated call");
+            return;
+        }
+
+        authManager.getValidToken(new RestAuthManager.TokenRefreshListener() {
+            @Override
+            public void onTokenRefreshSuccess() {
+                // Token is valid, proceed with Firebase operations
+                String validToken = authManager.getIdToken();
+                Log.d(TAG, "Using valid token for Firebase operations");
+
+                // Ensure FirebaseManager has the latest token
+                loadLatestTokensToFirebaseManager();
+
+                // Now start polling with valid token
+                if (firebaseManager != null) {
+                    firebaseManager.startPollingForSessions();
+                }
+            }
+
+            @Override
+            public void onTokenRefreshFailed(String error) {
+                Log.e(TAG, "Cannot get valid token for Firebase call: " + error);
+                runOnUiThread(() -> {
+                    updateUI("Authentication error: " + error, "", false, false);
+                    if (error.contains("Session expired")) {
+                        redirectToLogin();
+                    }
+                });
+            }
+        });
+    }
+
+    private void validateAuthenticationAndStartPolling() {
+        if (authManager == null) {
+            Log.e(TAG, "AuthManager not initialized");
+            return;
+        }
+
+        // Check if user is still logged in
+        if (!authManager.isUserLoggedIn()) {
+            Log.w(TAG, "User is no longer logged in, returning to login screen");
+            Toast.makeText(this, "Session expired. Please login again.", Toast.LENGTH_LONG).show();
+            redirectToLogin();
+            return;
+        }
+
+        updateUI("Validating session and searching for motions...", "", false, false);
+
+        // Use the authenticated call method instead of direct polling
+        makeAuthenticatedFirebaseCall();
+    }
+
+    private void loadLatestTokensToFirebaseManager() {
+        // Force FirebaseRestManager to reload tokens from SharedPreferences
+        // This ensures it has the most up-to-date tokens
+        if (firebaseManager != null) {
+            firebaseManager.reloadTokensFromPreferences();
+        }
+    }
+
+    private void redirectToLogin() {
+        Intent intent = new Intent(this, LoginActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        startActivity(intent);
+        finish();
     }
 
     private void initializeViews() {
@@ -106,6 +296,9 @@ public class CameraActivity extends AppCompatActivity
     private void initializeComponents() {
         cameraExecutor = Executors.newSingleThreadExecutor();
 
+        // Initialize auth manager first
+        authManager = new RestAuthManager(this);
+
         // Initialize Firebase REST Manager with context
         firebaseManager = new FirebaseRestManager(this);
         firebaseManager.setListener(this);
@@ -119,10 +312,9 @@ public class CameraActivity extends AppCompatActivity
         wavingDetector.setListener(this);
         wavingDetector.setDebugListener(this);
 
-        // Start polling for sessions
-        firebaseManager.startPollingForSessions();
+        updateUI("Initializing...", "", false, false);
 
-        updateUI("Searching for your motion sessions...", "", false, false);
+        // Don't start polling immediately - wait for onResume to validate auth first
     }
 
     private void initializeMediaPipe() {
@@ -262,7 +454,68 @@ public class CameraActivity extends AppCompatActivity
     public void onError(String error) {
         runOnUiThread(() -> {
             Log.e(TAG, "Firebase error: " + error);
-            updateUI("Error: " + error, "", false, false);
+
+            // Check if it's an authentication error
+            if (error.contains("Authentication") || error.contains("expired") ||
+                    error.contains("login") || error.contains("token")) {
+
+                // Prevent multiple simultaneous auth error handlers
+                if (isHandlingAuthError) {
+                    Log.d(TAG, "Already handling auth error, skipping");
+                    return;
+                }
+
+                isHandlingAuthError = true;
+                authRetryCount++;
+
+                // If we've tried too many times, force re-login
+                if (authRetryCount > MAX_AUTH_RETRIES) {
+                    Log.e(TAG, "Max auth retries exceeded, forcing re-login");
+                    Toast.makeText(this, "Authentication failed. Please login again.",
+                            Toast.LENGTH_LONG).show();
+                    authRetryCount = 0;
+                    isHandlingAuthError = false;
+                    redirectToLogin();
+                    return;
+                }
+
+                updateUI("Refreshing authentication... (Attempt " + authRetryCount + ")", "", false, false);
+                Toast.makeText(this, "Refreshing session, please wait...", Toast.LENGTH_SHORT).show();
+
+                // Try to refresh token and restart operations
+                if (authManager != null) {
+                    authManager.getValidToken(new RestAuthManager.TokenRefreshListener() {
+                        @Override
+                        public void onTokenRefreshSuccess() {
+                            Log.d(TAG, "Token refresh successful, restarting operations");
+                            isHandlingAuthError = false;
+                            loadLatestTokensToFirebaseManager();
+
+                            // Restart polling
+                            if (firebaseManager != null) {
+                                firebaseManager.startPollingForSessions();
+                            }
+                        }
+
+                        @Override
+                        public void onTokenRefreshFailed(String refreshError) {
+                            Log.e(TAG, "Token refresh failed during error recovery: " + refreshError);
+                            isHandlingAuthError = false;
+
+                            if (refreshError.contains("Session expired")) {
+                                redirectToLogin();
+                            } else {
+                                // Network error, try again later
+                                updateUI("Connection error, retrying...", "", false, false);
+                            }
+                        }
+                    });
+                }
+            } else {
+                // Non-auth error, just display it
+                updateUI("Error: " + error, "", false, false);
+                authRetryCount = 0; // Reset counter on non-auth errors
+            }
         });
     }
 
@@ -443,20 +696,6 @@ public class CameraActivity extends AppCompatActivity
                         Toast.LENGTH_SHORT).show();
                 finish();
             }
-        }
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        if (cameraExecutor != null) {
-            cameraExecutor.shutdown();
-        }
-        if (poseLandmarker != null) {
-            poseLandmarker.close();
-        }
-        if (firebaseManager != null) {
-            firebaseManager.cleanup();
         }
     }
 
