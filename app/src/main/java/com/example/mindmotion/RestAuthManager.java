@@ -8,35 +8,23 @@ import android.util.Log;
 import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
-import java.net.HttpURLConnection;
-import java.net.URL;
 
 public class RestAuthManager {
     private static final String TAG = "RestAuthManager";
-
     private static final String FIREBASE_API_KEY = "AIzaSyC7bPi7suzy8DmMFSgP7n090t7zHXzI5Bk";
     private static final String PROJECT_ID = "mindmotion-55c99";
     private static final String FIRESTORE_BASE_URL = "https://firestore.googleapis.com/v1/projects/" + PROJECT_ID + "/databases/(default)/documents";
     private static final String AUTH_BASE_URL = "https://identitytoolkit.googleapis.com/v1/accounts";
-    private static final String SECURE_TOKEN_URL = "https://securetoken.googleapis.com/v1/token?key=" + FIREBASE_API_KEY;
-
-    private ExecutorService executor;
-    private Handler mainHandler;
-    private Context context;
-    private SharedPreferences prefs;
 
     public interface AuthListener {
         void onLoginSuccess(String userId);
-
         void onLoginFailed(String error);
     }
 
@@ -44,6 +32,12 @@ public class RestAuthManager {
         void onTokenRefreshSuccess();
         void onTokenRefreshFailed(String error);
     }
+
+    private ExecutorService executor;
+    private Handler mainHandler;
+    private Context context;
+    private SharedPreferences prefs;
+
     public RestAuthManager(Context context) {
         this.context = context;
         this.prefs = context.getSharedPreferences("MindMotionPrefs", Context.MODE_PRIVATE);
@@ -51,14 +45,9 @@ public class RestAuthManager {
         this.mainHandler = new Handler(Looper.getMainLooper());
     }
 
-    // In RestAuthManager.java, update the loginUser method:
-
     public void loginUser(String email, String password, AuthListener listener) {
         executor.execute(() -> {
             try {
-                Log.d(TAG, "Attempting Firebase Auth login for email: " + email);
-
-                // Step 1: Authenticate with Firebase Auth REST API
                 String authUrl = AUTH_BASE_URL + ":signInWithPassword?key=" + FIREBASE_API_KEY;
 
                 JSONObject authPayload = new JSONObject();
@@ -73,16 +62,14 @@ public class RestAuthManager {
                 authConnection.setReadTimeout(15000);
                 authConnection.setDoOutput(true);
 
-                try (java.io.OutputStreamWriter writer = new java.io.OutputStreamWriter(authConnection.getOutputStream())) {
+                try (OutputStreamWriter writer = new OutputStreamWriter(authConnection.getOutputStream())) {
                     writer.write(authPayload.toString());
                     writer.flush();
                 }
 
                 int authResponseCode = authConnection.getResponseCode();
-                Log.d(TAG, "Firebase Auth response code: " + authResponseCode);
 
                 if (authResponseCode == 200) {
-                    // Parse auth response
                     BufferedReader reader = new BufferedReader(new InputStreamReader(authConnection.getInputStream()));
                     StringBuilder response = new StringBuilder();
                     String line;
@@ -97,34 +84,21 @@ public class RestAuthManager {
                     String userId = authResponse.getString("localId");
                     String userEmail = authResponse.getString("email");
 
-                    // UPDATED: Calculate token expiration time dynamically
-                    // Firebase Auth returns "expiresIn" as a string representing seconds
-                    // Get the expires_in value from response, default to 3600 seconds (1 hour)
-                    int expiresInSeconds = 3600; // Default 1 hour
+                    int expiresInSeconds = 3600;
                     if (authResponse.has("expiresIn")) {
                         try {
-                            String expiresInStr = authResponse.getString("expiresIn");
-                            expiresInSeconds = Integer.parseInt(expiresInStr);
-                            Log.d(TAG, "Token expires in " + expiresInSeconds + " seconds");
+                            expiresInSeconds = Integer.parseInt(authResponse.getString("expiresIn"));
                         } catch (Exception e) {
-                            Log.w(TAG, "Could not parse expiresIn, using default", e);
+                            Log.w(TAG, "Could not parse expiresIn, using default");
                         }
                     }
 
-                    // Use 90% of the actual expiry time as a buffer to ensure we refresh before actual expiry
-                    // This prevents edge cases where the token expires between check and use
                     long bufferTimeMillis = (long)(expiresInSeconds * 0.9 * 1000);
                     long tokenExpirationTime = System.currentTimeMillis() + bufferTimeMillis;
 
-                    Log.d(TAG, "Firebase Auth successful for user: " + userId);
-                    Log.d(TAG, "Token will be considered expired at: " + new java.util.Date(tokenExpirationTime));
-                    Log.d(TAG, "Actual expiry would be at: " + new java.util.Date(System.currentTimeMillis() + (expiresInSeconds * 1000L)));
-
-                    // Step 2: Get user profile directly using the UID
                     getUserProfileByUid(idToken, refreshToken, tokenExpirationTime, userId, userEmail, listener);
 
                 } else {
-                    // Handle auth error
                     BufferedReader errorReader = new BufferedReader(new InputStreamReader(authConnection.getErrorStream()));
                     StringBuilder errorResponse = new StringBuilder();
                     String line;
@@ -133,9 +107,6 @@ public class RestAuthManager {
                     }
                     errorReader.close();
 
-                    Log.e(TAG, "Firebase Auth failed: " + errorResponse.toString());
-
-                    // Parse error message
                     final String errorMessage = parseAuthError(errorResponse.toString());
                     mainHandler.post(() -> listener.onLoginFailed(errorMessage));
                 }
@@ -151,9 +122,6 @@ public class RestAuthManager {
 
     private void getUserProfileByUid(String idToken, String refreshToken, long tokenExpirationTime, String userId, String email, AuthListener listener) {
         try {
-            Log.d(TAG, "Getting user profile for userId: " + userId);
-
-            // Direct document access using the authenticated user's UID
             String firestoreUrl = FIRESTORE_BASE_URL + "/users/" + userId;
 
             HttpURLConnection connection = (HttpURLConnection) new URL(firestoreUrl).openConnection();
@@ -164,7 +132,6 @@ public class RestAuthManager {
             connection.setReadTimeout(15000);
 
             int responseCode = connection.getResponseCode();
-            Log.d(TAG, "Firestore GET response code: " + responseCode);
 
             if (responseCode == 200) {
                 BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
@@ -180,19 +147,15 @@ public class RestAuthManager {
                 if (userDoc.has("fields")) {
                     JSONObject fields = userDoc.getJSONObject("fields");
 
-                    // Check user type
                     if (fields.has("userType") && fields.getJSONObject("userType").has("stringValue")) {
                         String userType = fields.getJSONObject("userType").getString("stringValue");
-                        Log.d(TAG, "User type: " + userType);
 
                         if ("student".equals(userType)) {
-                            // Store user info
                             String userName = "Student";
                             if (fields.has("name") && fields.getJSONObject("name").has("stringValue")) {
                                 userName = fields.getJSONObject("name").getString("stringValue");
                             }
 
-                            // Store all authentication data including refresh token and expiration time
                             prefs.edit()
                                     .putString("USER_ID", userId)
                                     .putString("USER_NAME", userName)
@@ -200,29 +163,22 @@ public class RestAuthManager {
                                     .putString("ID_TOKEN", idToken)
                                     .putString("REFRESH_TOKEN", refreshToken)
                                     .putString("USER_EMAIL", email)
-                                    .putLong("TOKEN_EXPIRATION_TIME", tokenExpirationTime) // Store expiration time
+                                    .putLong("TOKEN_EXPIRATION_TIME", tokenExpirationTime)
                                     .apply();
 
-                            Log.d(TAG, "Login successful for student: " + userId);
-                            Log.d(TAG, "Token expiration stored: " + tokenExpirationTime);
                             mainHandler.post(() -> listener.onLoginSuccess(userId));
                         } else {
-                            Log.d(TAG, "User is not a student: " + userType);
                             mainHandler.post(() -> listener.onLoginFailed("Access denied. Students only."));
                         }
                     } else {
-                        Log.e(TAG, "No userType field found");
                         mainHandler.post(() -> listener.onLoginFailed("Invalid user profile: missing user type"));
                     }
                 } else {
-                    Log.e(TAG, "No fields found in user document");
                     mainHandler.post(() -> listener.onLoginFailed("Invalid user profile: no data"));
                 }
             } else if (responseCode == 404) {
-                Log.e(TAG, "User document not found");
                 mainHandler.post(() -> listener.onLoginFailed("User profile not found. Please contact administrator."));
             } else {
-                // Read error response
                 BufferedReader errorReader = new BufferedReader(new InputStreamReader(connection.getErrorStream()));
                 StringBuilder errorResponse = new StringBuilder();
                 String line;
@@ -231,7 +187,6 @@ public class RestAuthManager {
                 }
                 errorReader.close();
 
-                Log.e(TAG, "Firestore query failed with code: " + responseCode + ", response: " + errorResponse.toString());
                 mainHandler.post(() -> listener.onLoginFailed("Error accessing user profile"));
             }
 
@@ -243,7 +198,6 @@ public class RestAuthManager {
         }
     }
 
-    // Extract error parsing logic into a separate method
     private String parseAuthError(String errorResponseString) {
         String errorMessage = "Invalid email or password";
         try {
@@ -273,23 +227,14 @@ public class RestAuthManager {
         boolean hasBasicAuth = !userId.isEmpty() && !refreshToken.isEmpty();
         boolean tokenValid = !idToken.isEmpty() && tokenExpirationTime > System.currentTimeMillis();
 
-        boolean loggedIn = hasBasicAuth && (tokenValid || !refreshToken.isEmpty());
-
-        Log.d(TAG, "Checking login status:");
-        Log.d(TAG, "  - Has basic auth: " + hasBasicAuth);
-        Log.d(TAG, "  - Token valid: " + tokenValid);
-        Log.d(TAG, "  - Token expiration: " + tokenExpirationTime + " (current: " + System.currentTimeMillis() + ")");
-        Log.d(TAG, "  - Overall logged in: " + loggedIn);
-
-        return loggedIn;
+        return hasBasicAuth && (tokenValid || !refreshToken.isEmpty());
     }
+
     public void refreshTokenIfNeeded(TokenRefreshListener listener) {
         String refreshToken = prefs.getString("REFRESH_TOKEN", "");
-        Log.d(TAG, "Using refresh token: " + refreshToken);
         long tokenExpirationTime = prefs.getLong("TOKEN_EXPIRATION_TIME", 0);
 
         if (refreshToken.isEmpty()) {
-            Log.e(TAG, "No refresh token available");
             if (listener != null) {
                 mainHandler.post(() -> listener.onTokenRefreshFailed("No refresh token"));
             }
@@ -298,14 +243,11 @@ public class RestAuthManager {
 
         // Check if token is still valid (5 min buffer)
         if (System.currentTimeMillis() < (tokenExpirationTime - 300000)) {
-            Log.d(TAG, "Token is still valid, no refresh needed");
             if (listener != null) {
                 mainHandler.post(listener::onTokenRefreshSuccess);
             }
             return;
         }
-
-        Log.d(TAG, "Token expired or expiring soon, refreshing...");
 
         executor.execute(() -> {
             HttpURLConnection connection = null;
@@ -313,8 +255,7 @@ public class RestAuthManager {
                 String refreshUrl = "https://securetoken.googleapis.com/v1/token?key=" + FIREBASE_API_KEY;
                 String payload = "grant_type=refresh_token&refresh_token=" + refreshToken;
 
-                URL url = new URL(refreshUrl);
-                connection = (HttpURLConnection) url.openConnection();
+                connection = (HttpURLConnection) new URL(refreshUrl).openConnection();
                 connection.setRequestMethod("POST");
                 connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
                 connection.setConnectTimeout(15000);
@@ -327,13 +268,9 @@ public class RestAuthManager {
                 }
 
                 int responseCode = connection.getResponseCode();
-                Log.d(TAG, "Token refresh response code: " + responseCode);
 
-                InputStream is = (responseCode == HttpURLConnection.HTTP_OK)
-                        ? connection.getInputStream()
-                        : connection.getErrorStream();
-
-                BufferedReader reader = new BufferedReader(new InputStreamReader(is));
+                BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        responseCode == HttpURLConnection.HTTP_OK ? connection.getInputStream() : connection.getErrorStream()));
                 StringBuilder response = new StringBuilder();
                 String line;
                 while ((line = reader.readLine()) != null) {
@@ -349,24 +286,17 @@ public class RestAuthManager {
 
                     long newExpiryTime = System.currentTimeMillis() + (expiresInSeconds * 1000);
 
-                    // Save tokens
                     prefs.edit()
                             .putString("ID_TOKEN", newIdToken)
                             .putString("REFRESH_TOKEN", newRefreshToken)
                             .putLong("TOKEN_EXPIRATION_TIME", newExpiryTime)
                             .apply();
 
-                    Log.d(TAG, "✅ Token refresh successful");
-                    Log.d(TAG, "New ID token: " + newIdToken.substring(0, 20) + "...");
-                    Log.d(TAG, "New refresh token: " + newRefreshToken.substring(0, 20) + "...");
-                    Log.d(TAG, "Expires at: " + new java.util.Date(newExpiryTime));
-
                     if (listener != null) {
                         mainHandler.post(listener::onTokenRefreshSuccess);
                     }
 
                 } else {
-                    Log.e(TAG, "❌ Token refresh failed: " + response);
                     logout();
                     if (listener != null) {
                         mainHandler.post(() -> listener.onTokenRefreshFailed("Session expired. Please login again."));
@@ -374,7 +304,6 @@ public class RestAuthManager {
                 }
 
             } catch (Exception e) {
-                Log.e(TAG, "❌ Token refresh error", e);
                 if (listener != null) {
                     mainHandler.post(() -> listener.onTokenRefreshFailed("Network error during token refresh"));
                 }
@@ -384,7 +313,6 @@ public class RestAuthManager {
         });
     }
 
-    // Enhanced method to get a valid token (refreshes if needed)
     public void getValidToken(TokenRefreshListener listener) {
         if (!isUserLoggedIn()) {
             if (listener != null) {
@@ -396,18 +324,17 @@ public class RestAuthManager {
         String currentToken = prefs.getString("ID_TOKEN", "");
         long tokenExpirationTime = prefs.getLong("TOKEN_EXPIRATION_TIME", 0);
 
-        // If token is still valid, return immediately
         if (!currentToken.isEmpty() && System.currentTimeMillis() < tokenExpirationTime) {
-            Log.d(TAG, "Current token is still valid");
             if (listener != null) {
                 mainHandler.post(() -> listener.onTokenRefreshSuccess());
             }
             return;
         }
 
-        // Token expired or missing, refresh it
         refreshTokenIfNeeded(listener);
     }
+
+    // Getter methods
     public String getCurrentUserId() {
         return prefs.getString("USER_ID", "");
     }
@@ -433,7 +360,6 @@ public class RestAuthManager {
     }
 
     public void logout() {
-        Log.d(TAG, "Logging out user: " + getCurrentUserId());
         prefs.edit()
                 .remove("USER_ID")
                 .remove("USER_NAME")
@@ -441,7 +367,7 @@ public class RestAuthManager {
                 .remove("ID_TOKEN")
                 .remove("REFRESH_TOKEN")
                 .remove("USER_EMAIL")
-                .remove("TOKEN_EXPIRATION_TIME") // Also clear expiration time
+                .remove("TOKEN_EXPIRATION_TIME")
                 .apply();
     }
 
