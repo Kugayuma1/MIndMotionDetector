@@ -107,6 +107,20 @@
             android:text="Clap detection: Inactive"
             android:textSize="12sp"
             android:textColor="#FFFFFF" />
+        <TextView
+            android:id="@+id/speech_status_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Speech recognition initializing..."
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/last_word_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="12sp"
+            android:textColor="#666666" />
 
     </LinearLayout>
 

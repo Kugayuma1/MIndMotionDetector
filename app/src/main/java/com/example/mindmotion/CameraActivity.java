@@ -40,16 +40,21 @@ public class CameraActivity extends AppCompatActivity
         ClappingDetector.DebugListener,
         WavingDetector.WavingListener,
         WavingDetector.DebugListener,
-        RestAuthManager.TokenRefreshListener {
+        RestAuthManager.TokenRefreshListener,
+        SpeechRecognitionManager.SpeechListener {
 
     private static final String TAG = "CameraActivity";
     private static final int REQUEST_CODE_PERMISSIONS = 10;
-    private static final String[] REQUIRED_PERMISSIONS = new String[]{Manifest.permission.CAMERA};
+    private static final String[] REQUIRED_PERMISSIONS = new String[]{
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO // NEW: Audio permission
+    };
     private static final int MAX_AUTH_RETRIES = 3;
 
     // UI Components
     private TextView statusText, motionTypeText, clapCounter, resultText;
     private TextView debugPoseStatus, debugWristDistance, debugFingerDistance, debugClapStatus;
+    private TextView speechStatusText, lastWordText;
 
     // Core Components
     private ProcessCameraProvider cameraProvider;
@@ -59,6 +64,7 @@ public class CameraActivity extends AppCompatActivity
     private ClappingDetector clappingDetector;
     private WavingDetector wavingDetector;
     private RestAuthManager authManager;
+    private SpeechRecognitionManager speechManager;
 
     // Session State
     private String currentSessionId, currentMotionType;
@@ -80,6 +86,7 @@ public class CameraActivity extends AppCompatActivity
         if (allPermissionsGranted()) {
             initializeCamera();
             initializeMediaPipe();
+            initializeSpeechRecognition();
         } else {
             ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS);
         }
@@ -93,6 +100,7 @@ public class CameraActivity extends AppCompatActivity
 
         startPeriodicTokenRefresh();
         if (firebaseManager != null) firebaseManager.onAppResume();
+        if (speechManager != null) speechManager.resumeListening();
         validateAuthenticationAndStartPolling();
     }
 
@@ -101,6 +109,7 @@ public class CameraActivity extends AppCompatActivity
         super.onPause();
         stopPeriodicTokenRefresh();
         if (firebaseManager != null) firebaseManager.stopPolling();
+        if (speechManager != null) speechManager.pauseListening();
     }
 
     @Override
@@ -111,6 +120,7 @@ public class CameraActivity extends AppCompatActivity
         if (poseLandmarker != null) poseLandmarker.close();
         if (firebaseManager != null) firebaseManager.cleanup();
         if (authManager != null) authManager.cleanup();
+        if (speechManager != null) speechManager.cleanup();
     }
 
     private void initializeViews() {
@@ -122,6 +132,8 @@ public class CameraActivity extends AppCompatActivity
         debugWristDistance = findViewById(R.id.debug_wrist_distance);
         debugFingerDistance = findViewById(R.id.debug_finger_distance);
         debugClapStatus = findViewById(R.id.debug_clap_status);
+        speechStatusText = findViewById(R.id.speech_status_text);
+        lastWordText = findViewById(R.id.last_word_text);
     }
 
     private void initializeComponents() {
@@ -150,7 +162,11 @@ public class CameraActivity extends AppCompatActivity
         wavingDetector.setListener(this);
         wavingDetector.setDebugListener(this);
 
+        speechManager = new SpeechRecognitionManager(this);
+        speechManager.setListener(this);
+
         updateUI("Initializing...", "", false, false);
+        updateSpeechUI("Speech recognition initializing...", "");
     }
 
     private void initializeMediaPipe() {
@@ -185,6 +201,14 @@ public class CameraActivity extends AppCompatActivity
                 Log.e(TAG, "Camera initialization failed", e);
             }
         }, ContextCompat.getMainExecutor(this));
+    }
+
+    private void initializeSpeechRecognition() {
+        if (speechManager.hasPermission()) {
+            speechManager.startListening();
+        } else {
+            updateSpeechUI("Microphone permission required", "");
+        }
     }
 
     private void bindCameraUseCases() {
@@ -427,6 +451,31 @@ public class CameraActivity extends AppCompatActivity
         runOnUiThread(() -> updateClapCounter(currentWaves, requiredWaves, "waves"));
     }
 
+    @Override
+    public void onWordDetected(String word) {
+        runOnUiThread(() -> {
+            updateSpeechUI("Listening...", "Last word: " + word);
+
+            // Save word to Firebase
+            if (firebaseManager != null) {
+                firebaseManager.saveVoiceData(word);
+            }
+        });
+    }
+
+    @Override
+    public void onSpeechError(String error) {
+        runOnUiThread(() -> updateSpeechUI("Speech error: " + error, ""));
+    }
+
+    @Override
+    public void onSpeechStatusChanged(boolean isListening) {
+        runOnUiThread(() -> {
+            String status = isListening ? "Listening for words..." : "Speech recognition paused";
+            updateSpeechUI(status, lastWordText.getText().toString());
+        });
+    }
+
     // Debug Listener Methods
     public void onClapDebugUpdate(String poseStatus, String wristDistance, String fingerDistance, String clapStatus) {
         runOnUiThread(() -> {
@@ -444,6 +493,15 @@ public class CameraActivity extends AppCompatActivity
             debugFingerDistance.setText("Wave movement: " + waveMovement);
             debugClapStatus.setText("Wave detection: " + waveStatus);
         });
+    }
+
+    private void updateSpeechUI(String status, String lastWord) {
+        if (speechStatusText != null) {
+            speechStatusText.setText(status);
+        }
+        if (lastWordText != null && !lastWord.isEmpty()) {
+            lastWordText.setText(lastWord);
+        }
     }
 
     // Motion Detection Control
@@ -519,6 +577,7 @@ public class CameraActivity extends AppCompatActivity
             if (allPermissionsGranted()) {
                 initializeCamera();
                 initializeMediaPipe();
+                initializeSpeechRecognition();
             } else {
                 Toast.makeText(this, "Permissions not granted by the user.", Toast.LENGTH_SHORT).show();
                 finish();

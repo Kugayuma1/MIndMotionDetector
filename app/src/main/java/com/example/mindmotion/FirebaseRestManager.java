@@ -492,6 +492,10 @@ public class FirebaseRestManager {
     }
 
     public void saveVoiceData(String spokenText) {
+        Log.d(TAG, "=== VOICE DATA DEBUG START ===");
+        Log.d(TAG, "Current user ID: " + currentUserId);
+        Log.d(TAG, "Spoken text: " + spokenText);
+
         if (currentUserId.isEmpty()) return;
 
         executor.execute(() -> {
@@ -501,56 +505,61 @@ public class FirebaseRestManager {
                     return;
                 }
 
+                // Get next voice data ID from user's metadata counters
                 String today = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
-                String documentId = currentUserId + "_" + today;
 
-                // NEW: Use user-scoped voice data path
-                String getUrlString = BASE_URL + "/users/" + currentUserId + "/voice_data/" + documentId;
-                JSONObject existingData = getExistingVoiceData(getUrlString);
-                JSONArray wordsArray = new JSONArray();
+                // First, get and increment the voice counter
+                String counterUrl = BASE_URL + "/users/" + currentUserId + "/metadata/counters";
+                JSONObject counterData = getUserCounters(counterUrl);
 
-                if (existingData != null && existingData.has("fields")
-                        && existingData.getJSONObject("fields").has("words")
-                        && existingData.getJSONObject("fields").getJSONObject("words").has("arrayValue")
-                        && existingData.getJSONObject("fields").getJSONObject("words").getJSONObject("arrayValue").has("values")) {
-
-                    wordsArray = existingData.getJSONObject("fields")
-                            .getJSONObject("words")
-                            .getJSONObject("arrayValue")
-                            .getJSONArray("values");
+                int currentVoiceCounter = 0;
+                if (counterData != null && counterData.has("fields") &&
+                        counterData.getJSONObject("fields").has("voiceCounter") &&
+                        counterData.getJSONObject("fields").getJSONObject("voiceCounter").has("integerValue")) {
+                    currentVoiceCounter = Integer.parseInt(counterData.getJSONObject("fields").getJSONObject("voiceCounter").getString("integerValue"));
                 }
 
-                JSONObject newWord = new JSONObject();
-                JSONObject newWordValue = new JSONObject();
-                newWordValue.put("stringValue", spokenText);
-                newWord.put("value", newWordValue);
-                newWord.put("timestamp", new JSONObject().put("integerValue", System.currentTimeMillis()));
-                wordsArray.put(newWord);
+                currentVoiceCounter++;
+                String voiceId = String.valueOf(currentVoiceCounter);
 
+                // Update the counter first
+                updateVoiceCounter(counterUrl, currentVoiceCounter);
+
+                // Create individual voice entry with sequential ID
+                String voiceDocumentUrl = BASE_URL + "/users/" + currentUserId + "/voice_data/" + voiceId;
+
+                Log.d(TAG, "Voice data URL: " + voiceDocumentUrl);
+                Log.d(TAG, "Voice ID: " + voiceId);
+
+                // Payload for individual voice entry
                 JSONObject payload = new JSONObject();
                 JSONObject fields = new JSONObject();
 
-                JSONObject userIdField = new JSONObject();
-                userIdField.put("stringValue", currentUserId);
-                fields.put("userId", userIdField);
+                // Word
+                JSONObject wordField = new JSONObject();
+                wordField.put("stringValue", spokenText);
+                fields.put("word", wordField);
 
+                // Date
                 JSONObject dateField = new JSONObject();
                 dateField.put("stringValue", today);
                 fields.put("date", dateField);
 
-                JSONObject wordsField = new JSONObject();
-                JSONObject arrayValue = new JSONObject();
-                arrayValue.put("values", wordsArray);
-                wordsField.put("arrayValue", arrayValue);
-                fields.put("words", wordsField);
+                // Timestamp
+                JSONObject timestampField = new JSONObject();
+                timestampField.put("integerValue", String.valueOf(System.currentTimeMillis()));
+                fields.put("timestamp", timestampField);
 
-                JSONObject lastUpdatedField = new JSONObject();
-                lastUpdatedField.put("integerValue", System.currentTimeMillis());
-                fields.put("lastUpdated", lastUpdatedField);
+                // Voice ID
+                JSONObject voiceIdField = new JSONObject();
+                voiceIdField.put("integerValue", String.valueOf(currentVoiceCounter));
+                fields.put("voiceId", voiceIdField);
 
                 payload.put("fields", fields);
 
-                HttpURLConnection connection = (HttpURLConnection) new URL(getUrlString).openConnection();
+                Log.d(TAG, "Voice payload: " + payload.toString());
+
+                HttpURLConnection connection = (HttpURLConnection) new URL(voiceDocumentUrl).openConnection();
                 connection.setRequestMethod("PATCH");
                 connection.setRequestProperty("Content-Type", "application/json");
                 connection.setRequestProperty("Authorization", "Bearer " + idToken);
@@ -562,27 +571,111 @@ public class FirebaseRestManager {
                 writer.close();
 
                 int responseCode = connection.getResponseCode();
+                Log.d(TAG, "HTTP Response code: " + responseCode);
+
                 if (responseCode == HttpURLConnection.HTTP_OK) {
+                    Log.d(TAG, "SUCCESS: Voice data saved with ID " + voiceId);
                     mainHandler.post(() -> {
                         if (listener != null) listener.onVoiceDataSaved(today, spokenText);
                     });
-                } else if (responseCode == 401 || responseCode == 403) {
-                    synchronized (refreshLock) {
-                        tokenExpirationTime = 0;
+                } else {
+                    // Read error response
+                    BufferedReader errorReader = new BufferedReader(new InputStreamReader(connection.getErrorStream()));
+                    StringBuilder errorResponse = new StringBuilder();
+                    String line;
+                    while ((line = errorReader.readLine()) != null) {
+                        errorResponse.append(line);
                     }
-                    if (ensureValidToken()) {
-                        saveVoiceData(spokenText);
-                    } else {
-                        notifyError("Authentication failed - please login again");
-                    }
+                    errorReader.close();
+                    Log.e(TAG, "Firebase error response: " + errorResponse.toString());
+                    notifyError("Voice data save failed: " + responseCode);
                 }
 
                 connection.disconnect();
 
             } catch (Exception e) {
+                Log.e(TAG, "Exception: " + e.getMessage(), e);
                 notifyError("Voice data save error: " + e.getMessage());
             }
         });
+    }
+
+    // Helper method to get current counters
+    private JSONObject getUserCounters(String counterUrl) {
+        try {
+            HttpURLConnection connection = (HttpURLConnection) new URL(counterUrl).openConnection();
+            connection.setRequestMethod("GET");
+            connection.setRequestProperty("Authorization", "Bearer " + idToken);
+
+            int responseCode = connection.getResponseCode();
+            if (responseCode == 200) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+                StringBuilder response = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    response.append(line);
+                }
+                reader.close();
+                connection.disconnect();
+                return new JSONObject(response.toString());
+            }
+            connection.disconnect();
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting counters: " + e.getMessage());
+        }
+        return null;
+    }
+
+    // Helper method to update voice counter
+    private void updateVoiceCounter(String counterUrl, int newVoiceCounter) {
+        try {
+            // Get existing counters first
+            JSONObject existingCounters = getUserCounters(counterUrl);
+
+            JSONObject counterData = new JSONObject();
+            JSONObject fields = new JSONObject();
+
+            // Preserve existing session and activity counters
+            if (existingCounters != null && existingCounters.has("fields")) {
+                JSONObject existingFields = existingCounters.getJSONObject("fields");
+
+                if (existingFields.has("sessionCounter")) {
+                    fields.put("sessionCounter", existingFields.getJSONObject("sessionCounter"));
+                }
+                if (existingFields.has("activityCounter")) {
+                    fields.put("activityCounter", existingFields.getJSONObject("activityCounter"));
+                }
+            }
+
+            // Add/update voice counter
+            JSONObject voiceCounterField = new JSONObject();
+            voiceCounterField.put("integerValue", String.valueOf(newVoiceCounter));
+            fields.put("voiceCounter", voiceCounterField);
+
+            // Add timestamp
+            JSONObject timestampField = new JSONObject();
+            timestampField.put("integerValue", String.valueOf(System.currentTimeMillis()));
+            fields.put("lastUpdated", timestampField);
+
+            counterData.put("fields", fields);
+
+            HttpURLConnection connection = (HttpURLConnection) new URL(counterUrl).openConnection();
+            connection.setRequestMethod("PATCH");
+            connection.setRequestProperty("Content-Type", "application/json");
+            connection.setRequestProperty("Authorization", "Bearer " + idToken);
+            connection.setDoOutput(true);
+
+            OutputStreamWriter writer = new OutputStreamWriter(connection.getOutputStream());
+            writer.write(counterData.toString());
+            writer.flush();
+            writer.close();
+
+            connection.getResponseCode(); // Execute request
+            connection.disconnect();
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error updating voice counter: " + e.getMessage());
+        }
     }
 
     private JSONObject getExistingVoiceData(String urlString) {
