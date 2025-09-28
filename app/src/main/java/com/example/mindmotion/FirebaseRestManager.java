@@ -26,8 +26,6 @@ public class FirebaseRestManager {
     private static final String TAG = "FirebaseRestManager";
     private static final String PROJECT_ID = "mindmotion-55c99";
     private static final String BASE_URL = "https://firestore.googleapis.com/v1/projects/" + PROJECT_ID + "/databases/(default)/documents";
-    private static final String MOTION_SESSIONS_COLLECTION = "motion_sessions";
-    private static final String VOICE_DATA_COLLECTION = "voice_data";
     private static final String FIREBASE_API_KEY = "AIzaSyC7bPi7suzy8DmMFSgP7n090t7zHXzI5Bk";
     private static final String AUTH_BASE_URL = "https://identitytoolkit.googleapis.com/v1/accounts";
     private static final int MAX_CONSECUTIVE_AUTH_FAILURES = 3;
@@ -250,7 +248,9 @@ public class FirebaseRestManager {
                     return;
                 }
 
-                String queryUrl = BASE_URL + "/" + MOTION_SESSIONS_COLLECTION + "?pageSize=50&orderBy=timestamp%20desc";
+                // NEW: Query user-specific motion sessions instead of global collection
+                String queryUrl = BASE_URL + "/users/" + currentUserId + "/motion_sessions" +
+                        "?pageSize=50&orderBy=timestamp%20desc";
 
                 HttpURLConnection connection = (HttpURLConnection) new URL(queryUrl).openConnection();
                 connection.setRequestMethod("GET");
@@ -270,7 +270,7 @@ public class FirebaseRestManager {
                     }
                     reader.close();
 
-                    parseSimpleResponse(response.toString());
+                    parseUserScopedResponse(response.toString());
                     consecutiveAuthFailures = 0;
 
                 } else if (responseCode == 401 || responseCode == 403) {
@@ -328,7 +328,9 @@ public class FirebaseRestManager {
 
                 payload.put("fields", fields);
 
-                String urlString = BASE_URL + "/" + MOTION_SESSIONS_COLLECTION + "/" + sessionId;
+                // NEW: Update user-scoped session path
+                String urlString = BASE_URL + "/users/" + currentUserId + "/motion_sessions/" + sessionId;
+
                 HttpURLConnection connection = (HttpURLConnection) new URL(urlString).openConnection();
                 connection.setRequestMethod("PATCH");
                 connection.setRequestProperty("Content-Type", "application/json");
@@ -368,7 +370,8 @@ public class FirebaseRestManager {
         });
     }
 
-    private void parseSimpleResponse(String jsonResponse) {
+    // Updated parsing method for user-scoped sessions
+    private void parseUserScopedResponse(String jsonResponse) {
         try {
             JSONObject response = new JSONObject(jsonResponse);
             if (!response.has("documents")) return;
@@ -384,14 +387,9 @@ public class FirebaseRestManager {
 
                 JSONObject fields = doc.getJSONObject("fields");
 
-                String sessionUserId = null;
                 String motionType = null;
                 String status = null;
                 long timestamp = 0;
-
-                if (fields.has("studentId") && fields.getJSONObject("studentId").has("stringValue")) {
-                    sessionUserId = fields.getJSONObject("studentId").getString("stringValue");
-                }
 
                 if (fields.has("motionType") && fields.getJSONObject("motionType").has("stringValue")) {
                     motionType = fields.getJSONObject("motionType").getString("stringValue");
@@ -406,7 +404,8 @@ public class FirebaseRestManager {
                     timestamp = Long.parseLong(timestampStr);
                 }
 
-                if (!currentUserId.equals(sessionUserId) || !"waiting".equals(status)) continue;
+                // Since we're already querying user-specific sessions, no need to check studentId
+                if (!"waiting".equals(status)) continue;
 
                 long timestampMs = timestamp * 1000;
                 if (timestamp > 0 && isSessionExpired(timestampMs)) {
@@ -419,11 +418,10 @@ public class FirebaseRestManager {
                 if (motionType != null) {
                     final String finalSessionId = sessionId;
                     final String finalMotionType = motionType;
-                    final String finalStudentId = sessionUserId;
 
                     mainHandler.post(() -> {
                         if (listener != null) {
-                            listener.onNewSessionFound(finalSessionId, finalMotionType, finalStudentId);
+                            listener.onNewSessionFound(finalSessionId, finalMotionType, currentUserId);
                         }
                     });
                 }
@@ -457,7 +455,9 @@ public class FirebaseRestManager {
 
                 payload.put("fields", fields);
 
-                String urlString = BASE_URL + "/" + MOTION_SESSIONS_COLLECTION + "/" + sessionId;
+                // NEW: Update user-scoped session path
+                String urlString = BASE_URL + "/users/" + currentUserId + "/motion_sessions/" + sessionId;
+
                 HttpURLConnection connection = (HttpURLConnection) new URL(urlString).openConnection();
                 connection.setRequestMethod("PATCH");
                 connection.setRequestProperty("Content-Type", "application/json");
@@ -504,7 +504,8 @@ public class FirebaseRestManager {
                 String today = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
                 String documentId = currentUserId + "_" + today;
 
-                String getUrlString = BASE_URL + "/" + VOICE_DATA_COLLECTION + "/" + documentId;
+                // NEW: Use user-scoped voice data path
+                String getUrlString = BASE_URL + "/users/" + currentUserId + "/voice_data/" + documentId;
                 JSONObject existingData = getExistingVoiceData(getUrlString);
                 JSONArray wordsArray = new JSONArray();
 
