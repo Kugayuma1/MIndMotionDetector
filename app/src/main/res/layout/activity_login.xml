@@ -74,18 +74,37 @@
                 android:textSize="16sp" />
 
             <!-- Password input -->
-            <EditText
-                android:id="@+id/et_password"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:layout_marginBottom="30dp"
-                android:background="@drawable/input_bg"
-                android:hint="Enter your Password"
-                android:inputType="textPassword"
-                android:padding="16dp"
-                android:textColor="#333333"
-                android:textColorHint="#999999"
-                android:textSize="16sp" />
+                <RelativeLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginBottom="30dp">
+
+                    <EditText
+                        android:id="@+id/et_password"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="@drawable/input_bg"
+                        android:hint="Enter your Password"
+                        android:inputType="textPassword"
+                        android:padding="16dp"
+                        android:paddingEnd="48dp"
+                        android:textColor="#333333"
+                        android:textColorHint="#999999"
+                        android:textSize="16sp" />
+
+                    <ImageButton
+                        android:id="@+id/btn_toggle_password"
+                        android:layout_width="48dp"
+                        android:layout_height="48dp"
+                        android:layout_alignParentEnd="true"
+                        android:layout_centerVertical="true"
+                        android:layout_marginEnd="0dp"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:src="@drawable/eyeofthetiger"
+                        android:contentDescription="Toggle password visibility"
+                        android:padding="12dp"
+                        android:scaleType="fitCenter" />
+                </RelativeLayout>
 
 
             <!-- Login button -->

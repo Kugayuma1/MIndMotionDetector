@@ -38,12 +38,14 @@
         <!-- Login Activity -->
         <activity
             android:name=".LoginActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:screenOrientation="portrait" />
 
         <!-- Main Menu Activity -->
         <activity
             android:name=".MainMenuActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:screenOrientation="portrait" />
 
         <!-- Camera Activity -->
         <activity

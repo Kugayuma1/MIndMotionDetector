@@ -3,6 +3,8 @@ package com.example.mindmotion;
 import android.content.Intent;
 import android.os.Bundle;
 import android.text.TextUtils;
+import android.text.method.HideReturnsTransformationMethod;
+import android.text.method.PasswordTransformationMethod;
 import android.view.View;
 import android.widget.EditText;
 import android.widget.ImageButton;
@@ -15,7 +17,9 @@ public class LoginActivity extends AppCompatActivity implements RestAuthManager.
     private EditText emailEditText;
     private EditText passwordEditText;
     private ImageButton loginButton;
+    private ImageButton togglePasswordButton;
     private ProgressBar progressBar;
+    private boolean isPasswordVisible = false;
 
     private RestAuthManager authManager;
 
@@ -38,9 +42,28 @@ public class LoginActivity extends AppCompatActivity implements RestAuthManager.
         emailEditText = findViewById(R.id.et_email);
         passwordEditText = findViewById(R.id.et_password);
         loginButton = findViewById(R.id.btn_login);
+        togglePasswordButton = findViewById(R.id.btn_toggle_password);
         progressBar = findViewById(R.id.progress_bar);
 
         loginButton.setOnClickListener(v -> loginUser());
+        togglePasswordButton.setOnClickListener(v -> togglePasswordVisibility());
+    }
+
+    private void togglePasswordVisibility() {
+        if (isPasswordVisible) {
+            // Hide password
+            passwordEditText.setTransformationMethod(PasswordTransformationMethod.getInstance());
+            togglePasswordButton.setImageResource(R.drawable.eyeofthetiger);
+            isPasswordVisible = false;
+        } else {
+            // Show password
+            passwordEditText.setTransformationMethod(HideReturnsTransformationMethod.getInstance());
+            togglePasswordButton.setImageResource(R.drawable.eye);
+            isPasswordVisible = true;
+        }
+
+        // Move cursor to end of text
+        passwordEditText.setSelection(passwordEditText.getText().length());
     }
 
     private void loginUser() {
