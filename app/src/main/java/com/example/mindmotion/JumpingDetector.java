@@ -11,12 +11,12 @@ public class JumpingDetector {
     private static final String TAG = "JumpingDetector";
 
     // Detection parameters for jumping
-    private static final double JUMP_HEIGHT_THRESHOLD = 0.08; // Minimum vertical movement to count as jump
-    private static final double FEET_LIFT_THRESHOLD = 0.05; // Both feet must lift off ground
+    private static final double JUMP_HEIGHT_THRESHOLD = 0.04; // Minimum vertical movement to count as jump
+    private static final double FEET_LIFT_THRESHOLD = 0.02; // Both feet must lift off ground
     private static final int REQUIRED_JUMP_COUNT = 3; // Number of jumps required
     private static final long JUMP_COOLDOWN_MS = 600; // Minimum time between jumps
     private static final long DETECTION_TIMEOUT_MS = 30000; // 30 seconds to complete jumps
-    private static final double LANDING_THRESHOLD = 0.03; // Threshold to detect landing
+    private static final double LANDING_THRESHOLD = 0.05; // Threshold to detect landing
 
     // Pose landmark indices (MediaPipe Pose)
     private static final int LEFT_HIP = 23;
@@ -46,7 +46,7 @@ public class JumpingDetector {
     private boolean wasInAir = false;
     private double peakJumpHeight = 0.0;
     private int framesInAir = 0;
-    private static final int MIN_FRAMES_IN_AIR = 3; // Minimum frames to count as jump
+    private static final int MIN_FRAMES_IN_AIR = 1; // Minimum frames to count as jump
 
     // Debug tracking
     private boolean lastBodyVisible = false;
