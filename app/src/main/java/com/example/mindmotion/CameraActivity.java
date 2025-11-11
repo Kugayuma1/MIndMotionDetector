@@ -9,8 +9,6 @@ import android.os.Looper;
 import android.util.Log;
 import android.util.Size;
 import android.widget.TextView;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -40,6 +38,8 @@ public class CameraActivity extends AppCompatActivity
         ClappingDetector.DebugListener,
         WavingDetector.WavingListener,
         WavingDetector.DebugListener,
+        JumpingDetector.JumpingListener,
+        JumpingDetector.DebugListener,
         RestAuthManager.TokenRefreshListener,
         SpeechRecognitionManager.SpeechListener {
 
@@ -47,7 +47,7 @@ public class CameraActivity extends AppCompatActivity
     private static final int REQUEST_CODE_PERMISSIONS = 10;
     private static final String[] REQUIRED_PERMISSIONS = new String[]{
             Manifest.permission.CAMERA,
-            Manifest.permission.RECORD_AUDIO // NEW: Audio permission
+            Manifest.permission.RECORD_AUDIO
     };
     private static final int MAX_AUTH_RETRIES = 3;
 
@@ -63,6 +63,7 @@ public class CameraActivity extends AppCompatActivity
     private FirebaseRestManager firebaseManager;
     private ClappingDetector clappingDetector;
     private WavingDetector wavingDetector;
+    private JumpingDetector jumpingDetector;
     private RestAuthManager authManager;
     private SpeechRecognitionManager speechManager;
 
@@ -140,7 +141,6 @@ public class CameraActivity extends AppCompatActivity
         cameraExecutor = Executors.newSingleThreadExecutor();
         authManager = new RestAuthManager(this);
 
-        // Initialize token refresh runnable
         tokenRefreshRunnable = new Runnable() {
             @Override
             public void run() {
@@ -161,6 +161,10 @@ public class CameraActivity extends AppCompatActivity
         wavingDetector = new WavingDetector();
         wavingDetector.setListener(this);
         wavingDetector.setDebugListener(this);
+
+        jumpingDetector = new JumpingDetector();
+        jumpingDetector.setListener(this);
+        jumpingDetector.setDebugListener(this);
 
         speechManager = new SpeechRecognitionManager(this);
         speechManager.setListener(this);
@@ -253,6 +257,8 @@ public class CameraActivity extends AppCompatActivity
             clappingDetector.analyzePoseResult(result);
         } else if ("wave".equals(currentMotionType) && wavingDetector.isActive()) {
             wavingDetector.analyzePoseResult(result);
+        } else if ("jump".equals(currentMotionType) && jumpingDetector.isActive()) {
+            jumpingDetector.analyzePoseResult(result);
         }
     }
 
@@ -334,6 +340,8 @@ public class CameraActivity extends AppCompatActivity
                 startClappingDetection();
             } else if ("wave".equals(motionType)) {
                 startWavingDetection();
+            } else if ("jump".equals(motionType)) {
+                startJumpingDetection();
             } else {
                 updateUI("Unknown motion type: " + motionType, motionType, false, false);
             }
@@ -409,7 +417,7 @@ public class CameraActivity extends AppCompatActivity
         runOnUiThread(() -> Toast.makeText(this, "Voice data saved: " + data, Toast.LENGTH_SHORT).show());
     }
 
-    // Motion Detection Listener Methods
+    // Clapping Detection Listener Methods
     @Override
     public void onClappingDetected(int clapCount) {
         runOnUiThread(() -> updateClapCounter(clapCount, clappingDetector.getRequiredClapCount(), "claps"));
@@ -436,6 +444,7 @@ public class CameraActivity extends AppCompatActivity
         });
     }
 
+    // Waving Detection Listener Methods
     public void onWavingDetected(int waveCount) {
         runOnUiThread(() -> updateClapCounter(waveCount, wavingDetector.getRequiredWaveCount(), "waves"));
     }
@@ -451,12 +460,27 @@ public class CameraActivity extends AppCompatActivity
         runOnUiThread(() -> updateClapCounter(currentWaves, requiredWaves, "waves"));
     }
 
+    // Jumping Detection Listener Methods
+    public void onJumpingDetected(int jumpCount) {
+        runOnUiThread(() -> updateClapCounter(jumpCount, jumpingDetector.getRequiredJumpCount(), "jumps"));
+    }
+
+    public void onJumpingCompleted() {
+        runOnUiThread(() -> {
+            updateUI("Motion detected successfully! 🦘", currentMotionType, false, true);
+            onMotionCompleted();
+        });
+    }
+
+    public void onJumpingProgress(int currentJumps, int requiredJumps) {
+        runOnUiThread(() -> updateClapCounter(currentJumps, requiredJumps, "jumps"));
+    }
+
+    // Speech Recognition Listener Methods
     @Override
     public void onWordDetected(String word) {
         runOnUiThread(() -> {
             updateSpeechUI("Listening...", "Last word: " + word);
-
-            // Save word to Firebase
             if (firebaseManager != null) {
                 firebaseManager.saveVoiceData(word);
             }
@@ -476,7 +500,9 @@ public class CameraActivity extends AppCompatActivity
         });
     }
 
-    // Debug Listener Methods
+    // Debug Listener Methods - SEPARATED LIKE YOUR ORIGINAL CODE
+
+    // ClappingDetector.DebugListener implementation
     public void onClapDebugUpdate(String poseStatus, String wristDistance, String fingerDistance, String clapStatus) {
         runOnUiThread(() -> {
             debugPoseStatus.setText("Pose: " + poseStatus);
@@ -486,12 +512,23 @@ public class CameraActivity extends AppCompatActivity
         });
     }
 
+    // WavingDetector.DebugListener implementation
     public void onWaveDebugUpdate(String poseStatus, String handsHeight, String waveMovement, String waveStatus) {
         runOnUiThread(() -> {
             debugPoseStatus.setText("Pose: " + poseStatus);
             debugWristDistance.setText("Hands height: " + handsHeight);
             debugFingerDistance.setText("Wave movement: " + waveMovement);
             debugClapStatus.setText("Wave detection: " + waveStatus);
+        });
+    }
+
+    // JumpingDetector.DebugListener implementation
+    public void onJumpDebugUpdate(String poseStatus, String bodyHeight, String feetStatus, String jumpStatus) {
+        runOnUiThread(() -> {
+            debugPoseStatus.setText("Pose: " + poseStatus);
+            debugWristDistance.setText("Body height: " + bodyHeight);
+            debugFingerDistance.setText("Feet status: " + feetStatus);
+            debugClapStatus.setText("Jump detection: " + jumpStatus);
         });
     }
 
@@ -508,13 +545,22 @@ public class CameraActivity extends AppCompatActivity
     private void startClappingDetection() {
         updateUI("Clapping detection active", currentMotionType, true, false);
         wavingDetector.stopDetection();
+        jumpingDetector.stopDetection();
         clappingDetector.startDetection();
     }
 
     private void startWavingDetection() {
         updateUI("Waving detection active", currentMotionType, true, false);
         clappingDetector.stopDetection();
+        jumpingDetector.stopDetection();
         wavingDetector.startDetection();
+    }
+
+    private void startJumpingDetection() {
+        updateUI("Jumping detection active", currentMotionType, true, false);
+        clappingDetector.stopDetection();
+        wavingDetector.stopDetection();
+        jumpingDetector.startDetection();
     }
 
     private void onMotionCompleted() {
@@ -538,6 +584,7 @@ public class CameraActivity extends AppCompatActivity
         currentMotionType = null;
         clappingDetector.stopDetection();
         wavingDetector.stopDetection();
+        jumpingDetector.stopDetection();
     }
 
     private void updateUI(String status, String motionType, boolean showCounter, boolean showResult) {
