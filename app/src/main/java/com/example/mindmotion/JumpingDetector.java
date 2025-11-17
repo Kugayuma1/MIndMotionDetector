@@ -1,7 +1,6 @@
 package com.example.mindmotion;
 
 import android.util.Log;
-
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarkerResult;
 import com.google.mediapipe.tasks.components.containers.NormalizedLandmark;
 import java.util.ArrayList;
@@ -10,28 +9,22 @@ import java.util.List;
 public class JumpingDetector {
     private static final String TAG = "JumpingDetector";
 
-    // Detection parameters for jumping
-    private static final double JUMP_HEIGHT_THRESHOLD = 0.04; // Minimum vertical movement to count as jump
-    private static final double FEET_LIFT_THRESHOLD = 0.02; // Both feet must lift off ground
-    private static final int REQUIRED_JUMP_COUNT = 3; // Number of jumps required
-    private static final long JUMP_COOLDOWN_MS = 600; // Minimum time between jumps
-    private static final long DETECTION_TIMEOUT_MS = 30000; // 30 seconds to complete jumps
-    private static final double LANDING_THRESHOLD = 0.05; // Threshold to detect landing
+    // Detection parameters
+    private static final int REQUIRED_JUMP_COUNT = 3;
+    private static final long JUMP_COOLDOWN_MS = 400;
+    private static final long DETECTION_TIMEOUT_MS = 30000;
 
-    // Pose landmark indices (MediaPipe Pose)
+    // Pose landmark indices
     private static final int LEFT_HIP = 23;
     private static final int RIGHT_HIP = 24;
-    private static final int LEFT_KNEE = 25;
-    private static final int RIGHT_KNEE = 26;
     private static final int LEFT_ANKLE = 27;
     private static final int RIGHT_ANKLE = 28;
-    private static final int LEFT_HEEL = 29;
-    private static final int RIGHT_HEEL = 30;
-    private static final int LEFT_FOOT_INDEX = 31;
-    private static final int RIGHT_FOOT_INDEX = 32;
-    private static final int NOSE = 0;
+    private static final int LEFT_KNEE = 25;
+    private static final int RIGHT_KNEE = 26;
+    private static final int LEFT_SHOULDER = 11;
+    private static final int RIGHT_SHOULDER = 12;
 
-    // State tracking for jump detection
+    // Jump tracking
     private List<Long> jumpTimes;
     private long lastJumpTime;
     private long detectionStartTime;
@@ -39,21 +32,21 @@ public class JumpingDetector {
     private JumpingListener listener;
     private DebugListener debugListener;
 
-    // Jump motion tracking
-    private double baselineHipHeight = 0.0;
-    private double baselineAnkleHeight = 0.0;
-    private boolean isJumping = false;
-    private boolean wasInAir = false;
-    private double peakJumpHeight = 0.0;
-    private int framesInAir = 0;
-    private static final int MIN_FRAMES_IN_AIR = 1; // Minimum frames to count as jump
+    // Rolling window for real-time baseline (last 15 frames = ~0.5 seconds)
+    private static final int BASELINE_WINDOW = 15;
+    private List<Double> recentHipHeights = new ArrayList<>();
+    private List<Double> recentAnkleHeights = new ArrayList<>();
 
-    // Debug tracking
-    private boolean lastBodyVisible = false;
-    private double lastHipHeight = 0.0;
-    private double lastAnkleHeight = 0.0;
-    private double lastHeightChange = 0.0;
-    private boolean lastJumpState = false;
+    // Velocity and acceleration tracking
+    private double lastHipY = 0.0;
+    private double lastVelocity = 0.0;
+    private List<Double> recentVelocities = new ArrayList<>();
+
+    // Jump state
+    private enum JumpPhase { WAITING, DETECTED_RISE, AIRBORNE, DETECTED_FALL }
+    private JumpPhase jumpPhase = JumpPhase.WAITING;
+    private double maxHeightInJump = 0.0;
+    private int airborneFrames = 0;
 
     public interface JumpingListener {
         void onJumpingDetected(int jumpCount);
@@ -80,7 +73,7 @@ public class JumpingDetector {
     }
 
     public void startDetection() {
-        Log.d(TAG, "Starting jumping detection...");
+        Log.d(TAG, "Starting jumping detection for kids - NO calibration needed!");
         reset();
         isDetectionActive = true;
         detectionStartTime = System.currentTimeMillis();
@@ -89,13 +82,13 @@ public class JumpingDetector {
             listener.onJumpingProgress(0, REQUIRED_JUMP_COUNT);
         }
 
-        updateDebugInfo();
+        updateDebugInfo("Ready!", "Start jumping anytime", "No need to stand still", "Jump when ready!");
     }
 
     public void stopDetection() {
         Log.d(TAG, "Stopping jumping detection");
         isDetectionActive = false;
-        updateDebugInfo();
+        updateDebugInfo("Stopped", "N/A", "N/A", "Inactive");
     }
 
     public void reset() {
@@ -103,177 +96,246 @@ public class JumpingDetector {
         lastJumpTime = 0;
         detectionStartTime = 0;
         isDetectionActive = false;
-        baselineHipHeight = 0.0;
-        baselineAnkleHeight = 0.0;
-        isJumping = false;
-        wasInAir = false;
-        peakJumpHeight = 0.0;
-        framesInAir = 0;
-        lastBodyVisible = false;
-        lastHipHeight = 0.0;
-        lastAnkleHeight = 0.0;
-        lastHeightChange = 0.0;
-        lastJumpState = false;
+        recentHipHeights.clear();
+        recentAnkleHeights.clear();
+        recentVelocities.clear();
+        jumpPhase = JumpPhase.WAITING;
+        maxHeightInJump = 0.0;
+        airborneFrames = 0;
+        lastHipY = 0.0;
+        lastVelocity = 0.0;
     }
 
     public void analyzePoseResult(PoseLandmarkerResult result) {
         if (!isDetectionActive || result == null || result.landmarks().isEmpty()) {
-            updateDebugInfo("No pose detected", "N/A", "N/A", "Inactive");
+            updateDebugInfo("No pose", "N/A", "N/A", "Inactive");
             return;
         }
 
-        // Check if detection has timed out
+        // Timeout check
         if (System.currentTimeMillis() - detectionStartTime > DETECTION_TIMEOUT_MS) {
-            Log.d(TAG, "Jumping detection timed out");
-            if (listener != null) {
-                listener.onDetectionTimeout();
-            }
+            Log.d(TAG, "Detection timed out");
+            if (listener != null) listener.onDetectionTimeout();
             stopDetection();
             return;
         }
 
-        // Get the first person's landmarks
         List<NormalizedLandmark> landmarks = result.landmarks().get(0);
-
-        if (landmarks.size() <= Math.max(RIGHT_FOOT_INDEX, LEFT_FOOT_INDEX)) {
-            updateDebugInfo("Insufficient landmarks", "N/A", "N/A", "Active - Waiting for full body");
+        if (landmarks.size() <= RIGHT_KNEE) {
+            updateDebugInfo("Insufficient landmarks", "N/A", "N/A", "Show full body");
             return;
         }
 
-        // Get relevant landmarks for jump detection
+        // Get landmarks
         NormalizedLandmark leftHip = landmarks.get(LEFT_HIP);
         NormalizedLandmark rightHip = landmarks.get(RIGHT_HIP);
         NormalizedLandmark leftAnkle = landmarks.get(LEFT_ANKLE);
         NormalizedLandmark rightAnkle = landmarks.get(RIGHT_ANKLE);
-        NormalizedLandmark leftFoot = landmarks.get(LEFT_FOOT_INDEX);
-        NormalizedLandmark rightFoot = landmarks.get(RIGHT_FOOT_INDEX);
-        NormalizedLandmark nose = landmarks.get(NOSE);
+        NormalizedLandmark leftKnee = landmarks.get(LEFT_KNEE);
+        NormalizedLandmark rightKnee = landmarks.get(RIGHT_KNEE);
+        NormalizedLandmark leftShoulder = landmarks.get(LEFT_SHOULDER);
+        NormalizedLandmark rightShoulder = landmarks.get(RIGHT_SHOULDER);
 
-        // Check if body parts are visible
-        boolean bodyVisible = isLandmarkVisible(leftHip) && isLandmarkVisible(rightHip) &&
-                isLandmarkVisible(leftAnkle) && isLandmarkVisible(rightAnkle) &&
-                isLandmarkVisible(leftFoot) && isLandmarkVisible(rightFoot);
-
-        lastBodyVisible = bodyVisible;
-
-        if (!bodyVisible) {
-            updateDebugInfo("Body not fully visible", "N/A", "N/A", "Active - Show full body");
+        // Check visibility
+        if (!isVisible(leftHip) || !isVisible(rightHip) ||
+                !isVisible(leftAnkle) || !isVisible(rightAnkle)) {
+            updateDebugInfo("Body not visible", "N/A", "N/A", "Show full body in camera");
             return;
         }
 
-        // Calculate average hip and ankle heights
-        double currentHipHeight = (leftHip.y() + rightHip.y()) / 2.0;
-        double currentAnkleHeight = (leftAnkle.y() + rightAnkle.y()) / 2.0;
-        double currentFootHeight = (leftFoot.y() + rightFoot.y()) / 2.0;
+        // Calculate current positions
+        double hipY = (leftHip.y() + rightHip.y()) / 2.0;
+        double ankleY = (leftAnkle.y() + rightAnkle.y()) / 2.0;
+        double kneeY = (leftKnee.y() + rightKnee.y()) / 2.0;
+        double shoulderY = (leftShoulder.y() + rightShoulder.y()) / 2.0;
 
-        lastHipHeight = currentHipHeight;
-        lastAnkleHeight = currentAnkleHeight;
+        // Body measurements (for normalization)
+        double torsoLength = Math.max(Math.abs(shoulderY - hipY), 0.08);
+        double hipToAnkle = ankleY - hipY; // Positive value (ankle below hip)
 
-        // Initialize baseline on first detection
-        if (baselineHipHeight == 0.0) {
-            baselineHipHeight = currentHipHeight;
-            baselineAnkleHeight = currentAnkleHeight;
-            updateDebugInfo("Body visible", "Calibrating baseline...", "On ground", "Active - Jump now!");
+        // Add to rolling window
+        recentHipHeights.add(hipY);
+        recentAnkleHeights.add(ankleY);
+        if (recentHipHeights.size() > BASELINE_WINDOW) {
+            recentHipHeights.remove(0);
+            recentAnkleHeights.remove(0);
+        }
+
+        // Need at least 5 frames to establish baseline
+        if (recentHipHeights.size() < 5) {
+            lastHipY = hipY;
+            updateDebugInfo("Initializing...", "Collecting data", "Move around freely!",
+                    String.format("%d/5 frames", recentHipHeights.size()));
             return;
         }
 
-        // Calculate height change (negative = moving up since Y increases downward)
-        double hipHeightChange = baselineHipHeight - currentHipHeight;
-        double ankleHeightChange = baselineAnkleHeight - currentAnkleHeight;
-        lastHeightChange = hipHeightChange;
+        // Calculate ROLLING BASELINE from recent LOW points (when person is on ground)
+        // Sort and take the lower 60% values (when feet are more likely on ground)
+        List<Double> sortedHips = new ArrayList<>(recentHipHeights);
+        sortedHips.sort(Double::compareTo);
+        int topIndex = (int)(sortedHips.size() * 0.6);
+        double groundBaseline = 0;
+        for (int i = sortedHips.size() - 1; i >= topIndex; i--) {
+            groundBaseline += sortedHips.get(i);
+        }
+        groundBaseline /= (sortedHips.size() - topIndex);
 
-        // Detect if person is in the air (both feet lifted)
-        boolean feetLifted = ankleHeightChange > FEET_LIFT_THRESHOLD;
-        boolean significantJump = hipHeightChange > JUMP_HEIGHT_THRESHOLD;
+        // Calculate velocity (change per frame) - NEGATIVE = moving up
+        double velocity = hipY - lastHipY;
+        lastHipY = hipY;
 
-        if (significantJump && feetLifted) {
-            // Person is jumping
-            if (!wasInAir) {
-                isJumping = true;
-                wasInAir = true;
-                framesInAir = 1;
-                peakJumpHeight = hipHeightChange;
-                Log.d(TAG, "Jump started - height change: " + hipHeightChange);
-            } else {
-                framesInAir++;
-                if (hipHeightChange > peakJumpHeight) {
-                    peakJumpHeight = hipHeightChange;
-                }
-            }
-        } else if (wasInAir && Math.abs(hipHeightChange) < LANDING_THRESHOLD) {
-            // Person has landed
-            Log.d(TAG, "Landing detected - frames in air: " + framesInAir + ", peak height: " + peakJumpHeight);
+        // Smooth velocity
+        recentVelocities.add(velocity);
+        if (recentVelocities.size() > 3) recentVelocities.remove(0);
+        double smoothVelocity = recentVelocities.stream().mapToDouble(v -> v).average().orElse(velocity);
 
-            if (framesInAir >= MIN_FRAMES_IN_AIR && peakJumpHeight > JUMP_HEIGHT_THRESHOLD) {
-                long currentTime = System.currentTimeMillis();
+        // Acceleration (change in velocity)
+        double acceleration = smoothVelocity - lastVelocity;
+        lastVelocity = smoothVelocity;
 
-                // Check cooldown to avoid multiple detections of same jump
-                if (currentTime - lastJumpTime > JUMP_COOLDOWN_MS) {
-                    registerJump(currentTime);
-                }
-            }
+        // Height relative to recent ground baseline (POSITIVE = above ground)
+        double relativeHeight = (groundBaseline - hipY) / torsoLength;
 
-            // Reset jump tracking
-            wasInAir = false;
-            isJumping = false;
-            framesInAir = 0;
-            peakJumpHeight = 0.0;
+        // Leg extension detection (legs straighten when jumping)
+        double hipKneeDistance = Math.abs(kneeY - hipY);
+        double kneeAnkleDistance = Math.abs(ankleY - kneeY);
+        double legExtension = (hipKneeDistance + kneeAnkleDistance) / torsoLength;
 
-            // Update baseline after landing
-            baselineHipHeight = currentHipHeight;
-            baselineAnkleHeight = currentAnkleHeight;
+        // Update max height in this jump
+        if (relativeHeight > maxHeightInJump) {
+            maxHeightInJump = relativeHeight;
         }
 
-        lastJumpState = wasInAir;
+        // JUMP DETECTION STATE MACHINE
+        switch (jumpPhase) {
+            case WAITING:
+                // Detect ANY UPWARD MOTION (ULTRA SENSITIVE - detects even 1cm!)
+                // 1. ANY upward velocity
+                // 2. Body rising even slightly above recent baseline
+                boolean anyUpwardMotion = smoothVelocity < -0.001; // ULTRA sensitive!
+                boolean slightRise = relativeHeight > 0.01; // Only 1cm needed!
 
-        // Update debug information
-        String poseStatus = bodyVisible ? "Full body visible" : "Body not visible";
-        String bodyHeightStr = String.format("Hip:%.3f Ankle:%.3f (change:%.3f)",
-                currentHipHeight, currentAnkleHeight, hipHeightChange);
-        String feetStatusStr = feetLifted ? "IN AIR" : "ON GROUND";
-        if (wasInAir) {
-            feetStatusStr += String.format(" (frames:%d)", framesInAir);
+                if (anyUpwardMotion && slightRise) {
+                    jumpPhase = JumpPhase.DETECTED_RISE;
+                    maxHeightInJump = relativeHeight;
+                    airborneFrames = 1;
+                    Log.d(TAG, String.format("🚀 RISE detected! vel=%.4f, height=%.3f", smoothVelocity, relativeHeight));
+                }
+                break;
+
+            case DETECTED_RISE:
+                airborneFrames++;
+
+                // Check if still rising or at peak (VERY LENIENT)
+                if (smoothVelocity < 0.002 && relativeHeight > 0.02) {
+                    // Still going up or at peak
+                    jumpPhase = JumpPhase.AIRBORNE;
+                    Log.d(TAG, String.format("✈️ AIRBORNE! Peak height: %.3f", maxHeightInJump));
+                } else if (relativeHeight < 0.01 || airborneFrames > 12) {
+                    // False alarm - didn't actually get airborne
+                    Log.d(TAG, "❌ False jump - resetting");
+                    jumpPhase = JumpPhase.WAITING;
+                    maxHeightInJump = 0;
+                    airborneFrames = 0;
+                }
+                break;
+
+            case AIRBORNE:
+                airborneFrames++;
+
+                // Detect FALLING (velocity becomes positive = moving down)
+                if (smoothVelocity > 0.002) {
+                    jumpPhase = JumpPhase.DETECTED_FALL;
+                    Log.d(TAG, String.format("⬇️ FALLING detected! vel=%.4f", smoothVelocity));
+                }
+
+                // Timeout if airborne too long (probably an error)
+                if (airborneFrames > 25) {
+                    Log.d(TAG, "⚠️ Airborne too long - resetting");
+                    jumpPhase = JumpPhase.WAITING;
+                    maxHeightInJump = 0;
+                    airborneFrames = 0;
+                }
+                break;
+
+            case DETECTED_FALL:
+                airborneFrames++;
+
+                // Detect LANDING (VERY LENIENT for tiny jumps)
+                boolean velocityStable = Math.abs(smoothVelocity) < 0.012;
+                boolean nearGround = relativeHeight < 0.15;
+
+                if (velocityStable && nearGround) {
+                    // JUMP COMPLETED!
+                    boolean validJump = maxHeightInJump > 0.015 && airborneFrames >= 2; // Only 1.5cm + 2 frames!
+
+                    if (validJump) {
+                        long currentTime = System.currentTimeMillis();
+                        if (currentTime - lastJumpTime > JUMP_COOLDOWN_MS) {
+                            registerJump(currentTime, maxHeightInJump * torsoLength);
+                            Log.d(TAG, String.format("✅ JUMP REGISTERED! Height: %.2fcm, Frames: %d",
+                                    maxHeightInJump * torsoLength * 100, airborneFrames));
+                        } else {
+                            Log.d(TAG, "⏱️ Jump too soon - cooldown active");
+                        }
+                    } else {
+                        Log.d(TAG, String.format("❌ Invalid jump - height: %.3f, frames: %d",
+                                maxHeightInJump, airborneFrames));
+                    }
+
+                    // Reset for next jump
+                    jumpPhase = JumpPhase.WAITING;
+                    maxHeightInJump = 0;
+                    airborneFrames = 0;
+                }
+
+                // Timeout
+                if (airborneFrames > 20) {
+                    Log.d(TAG, "⚠️ Landing timeout - resetting");
+                    jumpPhase = JumpPhase.WAITING;
+                    maxHeightInJump = 0;
+                    airborneFrames = 0;
+                }
+                break;
         }
-        String jumpStatus = String.format("Active - %s (%d/%d jumps)",
-                wasInAir ? "JUMPING" : "Jump now",
-                jumpTimes.size(), REQUIRED_JUMP_COUNT);
 
-        updateDebugInfo(poseStatus, bodyHeightStr, feetStatusStr, jumpStatus);
+        // Debug output
+        String phaseEmoji = jumpPhase == JumpPhase.WAITING ? "⏳" :
+                jumpPhase == JumpPhase.DETECTED_RISE ? "🚀" :
+                        jumpPhase == JumpPhase.AIRBORNE ? "✈️" : "⬇️";
+
+        String poseStatus = "Full body visible";
+        String heightStr = String.format("H:%.3f V:%.4f A:%.4f Leg:%.2f",
+                relativeHeight, smoothVelocity, acceleration, legExtension);
+        String phaseStr = String.format("%s %s (f:%d max:%.3f)",
+                phaseEmoji, jumpPhase.name(), airborneFrames, maxHeightInJump);
+        String jumpStr = String.format("%.0fcm | %d/%d jumps",
+                maxHeightInJump * torsoLength * 100, jumpTimes.size(), REQUIRED_JUMP_COUNT);
+
+        updateDebugInfo(poseStatus, heightStr, phaseStr, jumpStr);
     }
 
-    private boolean isLandmarkVisible(NormalizedLandmark landmark) {
-        // MediaPipe Tasks API uses visibility score
-        return landmark.visibility().isPresent() ? landmark.visibility().get() > 0.5 : true;
+    private boolean isVisible(NormalizedLandmark lm) {
+        return !lm.visibility().isPresent() || lm.visibility().get() > 0.5;
     }
 
-    private void registerJump(long currentTime) {
+    private void registerJump(long currentTime, double jumpHeightMeters) {
         jumpTimes.add(currentTime);
         lastJumpTime = currentTime;
 
-        Log.d(TAG, "Jump detected! Count: " + jumpTimes.size() + "/" + REQUIRED_JUMP_COUNT);
+        Log.d(TAG, String.format("🎯 JUMP #%d COUNTED! Height: %.1fcm",
+                jumpTimes.size(), jumpHeightMeters * 100));
 
         if (listener != null) {
             listener.onJumpingDetected(jumpTimes.size());
             listener.onJumpingProgress(jumpTimes.size(), REQUIRED_JUMP_COUNT);
         }
 
-        // Check if we've reached the required number of jumps
         if (jumpTimes.size() >= REQUIRED_JUMP_COUNT) {
-            Log.d(TAG, "Jumping sequence completed!");
-            if (listener != null) {
-                listener.onJumpingCompleted();
-            }
+            Log.d(TAG, "🎉🎉🎉 ALL JUMPS COMPLETED!");
+            if (listener != null) listener.onJumpingCompleted();
             stopDetection();
         }
-    }
-
-    private void updateDebugInfo() {
-        updateDebugInfo(
-                lastBodyVisible ? "Full body visible" : "Body not visible",
-                String.format("Hip:%.3f Ankle:%.3f", lastHipHeight, lastAnkleHeight),
-                lastJumpState ? "IN AIR" : "ON GROUND",
-                isDetectionActive ? "Active" : "Inactive"
-        );
     }
 
     private void updateDebugInfo(String poseStatus, String bodyHeight, String feetStatus, String jumpStatus) {
@@ -295,9 +357,7 @@ public class JumpingDetector {
     }
 
     public long getRemainingTime() {
-        if (!isDetectionActive) {
-            return 0;
-        }
+        if (!isDetectionActive) return 0;
         long elapsed = System.currentTimeMillis() - detectionStartTime;
         return Math.max(0, DETECTION_TIMEOUT_MS - elapsed);
     }
