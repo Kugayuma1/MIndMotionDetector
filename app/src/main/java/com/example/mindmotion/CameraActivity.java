@@ -40,6 +40,10 @@ public class CameraActivity extends AppCompatActivity
         WavingDetector.DebugListener,
         JumpingDetector.JumpingListener,
         JumpingDetector.DebugListener,
+        RaisingHandDetector.RaisingHandListener,
+        RaisingHandDetector.DebugListener,
+        MarchingDetector.MarchingListener,
+        MarchingDetector.DebugListener,
         RestAuthManager.TokenRefreshListener,
         SpeechRecognitionManager.SpeechListener {
 
@@ -64,6 +68,8 @@ public class CameraActivity extends AppCompatActivity
     private ClappingDetector clappingDetector;
     private WavingDetector wavingDetector;
     private JumpingDetector jumpingDetector;
+    private RaisingHandDetector raisingHandDetector;
+    private MarchingDetector marchingDetector;
     private RestAuthManager authManager;
     private SpeechRecognitionManager speechManager;
 
@@ -166,6 +172,14 @@ public class CameraActivity extends AppCompatActivity
         jumpingDetector.setListener(this);
         jumpingDetector.setDebugListener(this);
 
+        raisingHandDetector = new RaisingHandDetector();
+        raisingHandDetector.setListener(this);
+        raisingHandDetector.setDebugListener(this);
+
+        marchingDetector = new MarchingDetector();
+        marchingDetector.setListener(this);
+        marchingDetector.setDebugListener(this);
+
         speechManager = new SpeechRecognitionManager(this);
         speechManager.setListener(this);
 
@@ -259,6 +273,10 @@ public class CameraActivity extends AppCompatActivity
             wavingDetector.analyzePoseResult(result);
         } else if ("jump".equals(currentMotionType) && jumpingDetector.isActive()) {
             jumpingDetector.analyzePoseResult(result);
+        } else if ("raise_hand".equals(currentMotionType) && raisingHandDetector.isActive()) {
+            raisingHandDetector.analyzePoseResult(result);
+        } else if ("march".equals(currentMotionType) && marchingDetector.isActive()) {
+            marchingDetector.analyzePoseResult(result);
         }
     }
 
@@ -342,6 +360,10 @@ public class CameraActivity extends AppCompatActivity
                 startWavingDetection();
             } else if ("jump".equals(motionType)) {
                 startJumpingDetection();
+            } else if ("raise_hand".equals(motionType)) {
+                startRaisingHandDetection();
+            } else if ("march".equals(motionType)) {
+                startMarchingDetection();
             } else {
                 updateUI("Unknown motion type: " + motionType, motionType, false, false);
             }
@@ -476,6 +498,38 @@ public class CameraActivity extends AppCompatActivity
         runOnUiThread(() -> updateClapCounter(currentJumps, requiredJumps, "jumps"));
     }
 
+    // Raising Hand Detection Listener Methods
+    public void onHandRaised(int raiseCount) {
+        runOnUiThread(() -> updateClapCounter(raiseCount, raisingHandDetector.getRequiredRaiseCount(), "raises"));
+    }
+
+    public void onHandRaisingCompleted() {
+        runOnUiThread(() -> {
+            updateUI("Motion detected successfully! ✋", currentMotionType, false, true);
+            onMotionCompleted();
+        });
+    }
+
+    public void onHandRaisingProgress(int currentRaises, int requiredRaises) {
+        runOnUiThread(() -> updateClapCounter(currentRaises, requiredRaises, "raises"));
+    }
+
+    // Marching Detection Listener Methods
+    public void onMarchStepDetected(int stepCount) {
+        runOnUiThread(() -> updateClapCounter(stepCount, marchingDetector.getRequiredStepCount(), "steps"));
+    }
+
+    public void onMarchingCompleted() {
+        runOnUiThread(() -> {
+            updateUI("Motion detected successfully! 🚶", currentMotionType, false, true);
+            onMotionCompleted();
+        });
+    }
+
+    public void onMarchingProgress(int currentSteps, int requiredSteps) {
+        runOnUiThread(() -> updateClapCounter(currentSteps, requiredSteps, "steps"));
+    }
+
     // Speech Recognition Listener Methods
     @Override
     public void onWordDetected(String word) {
@@ -500,9 +554,7 @@ public class CameraActivity extends AppCompatActivity
         });
     }
 
-    // Debug Listener Methods - SEPARATED LIKE YOUR ORIGINAL CODE
-
-    // ClappingDetector.DebugListener implementation
+    // Debug Listener Methods - ClappingDetector.DebugListener
     public void onClapDebugUpdate(String poseStatus, String wristDistance, String fingerDistance, String clapStatus) {
         runOnUiThread(() -> {
             debugPoseStatus.setText("Pose: " + poseStatus);
@@ -512,7 +564,7 @@ public class CameraActivity extends AppCompatActivity
         });
     }
 
-    // WavingDetector.DebugListener implementation
+    // Debug Listener Methods - WavingDetector.DebugListener
     public void onWaveDebugUpdate(String poseStatus, String handsHeight, String waveMovement, String waveStatus) {
         runOnUiThread(() -> {
             debugPoseStatus.setText("Pose: " + poseStatus);
@@ -522,13 +574,33 @@ public class CameraActivity extends AppCompatActivity
         });
     }
 
-    // JumpingDetector.DebugListener implementation
+    // Debug Listener Methods - JumpingDetector.DebugListener
     public void onJumpDebugUpdate(String poseStatus, String bodyHeight, String feetStatus, String jumpStatus) {
         runOnUiThread(() -> {
             debugPoseStatus.setText("Pose: " + poseStatus);
             debugWristDistance.setText("Body height: " + bodyHeight);
             debugFingerDistance.setText("Feet status: " + feetStatus);
             debugClapStatus.setText("Jump detection: " + jumpStatus);
+        });
+    }
+
+    // Debug Listener Methods - RaisingHandDetector.DebugListener
+    public void onRaiseDebugUpdate(String poseStatus, String leftHandHeight, String rightHandHeight, String raiseStatus) {
+        runOnUiThread(() -> {
+            debugPoseStatus.setText("Pose: " + poseStatus);
+            debugWristDistance.setText("Left hand: " + leftHandHeight);
+            debugFingerDistance.setText("Right hand: " + rightHandHeight);
+            debugClapStatus.setText("Raise detection: " + raiseStatus);
+        });
+    }
+
+    // Debug Listener Methods - MarchingDetector.DebugListener
+    public void onMarchDebugUpdate(String poseStatus, String leftKneeStatus, String rightKneeStatus, String marchStatus) {
+        runOnUiThread(() -> {
+            debugPoseStatus.setText("Pose: " + poseStatus);
+            debugWristDistance.setText("Left knee: " + leftKneeStatus);
+            debugFingerDistance.setText("Right knee: " + rightKneeStatus);
+            debugClapStatus.setText("March detection: " + marchStatus);
         });
     }
 
@@ -546,6 +618,8 @@ public class CameraActivity extends AppCompatActivity
         updateUI("Clapping detection active", currentMotionType, true, false);
         wavingDetector.stopDetection();
         jumpingDetector.stopDetection();
+        raisingHandDetector.stopDetection();
+        marchingDetector.stopDetection();
         clappingDetector.startDetection();
     }
 
@@ -553,6 +627,8 @@ public class CameraActivity extends AppCompatActivity
         updateUI("Waving detection active", currentMotionType, true, false);
         clappingDetector.stopDetection();
         jumpingDetector.stopDetection();
+        raisingHandDetector.stopDetection();
+        marchingDetector.stopDetection();
         wavingDetector.startDetection();
     }
 
@@ -560,7 +636,27 @@ public class CameraActivity extends AppCompatActivity
         updateUI("Jumping detection active", currentMotionType, true, false);
         clappingDetector.stopDetection();
         wavingDetector.stopDetection();
+        raisingHandDetector.stopDetection();
+        marchingDetector.stopDetection();
         jumpingDetector.startDetection();
+    }
+
+    private void startRaisingHandDetection() {
+        updateUI("Raise hand detection active", currentMotionType, true, false);
+        clappingDetector.stopDetection();
+        wavingDetector.stopDetection();
+        jumpingDetector.stopDetection();
+        marchingDetector.stopDetection();
+        raisingHandDetector.startDetection();
+    }
+
+    private void startMarchingDetection() {
+        updateUI("Marching detection active", currentMotionType, true, false);
+        clappingDetector.stopDetection();
+        wavingDetector.stopDetection();
+        jumpingDetector.stopDetection();
+        raisingHandDetector.stopDetection();
+        marchingDetector.startDetection();
     }
 
     private void onMotionCompleted() {
@@ -585,6 +681,8 @@ public class CameraActivity extends AppCompatActivity
         clappingDetector.stopDetection();
         wavingDetector.stopDetection();
         jumpingDetector.stopDetection();
+        raisingHandDetector.stopDetection();
+        marchingDetector.stopDetection();
     }
 
     private void updateUI(String status, String motionType, boolean showCounter, boolean showResult) {
